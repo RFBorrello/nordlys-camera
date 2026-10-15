@@ -1,3 +1,9 @@
+// Release signing comes from Gradle properties (~/.gradle/gradle.properties) or
+// environment variables of the same name — never from files in this repo.
+fun signingValue(name: String): String? =
+    (project.findProperty(name) as String?)?.takeIf { it.isNotBlank() }
+        ?: System.getenv(name)?.takeIf { it.isNotBlank() }
+
 plugins {
     alias(libs.plugins.android.application)
     alias(libs.plugins.kotlin.android)
@@ -12,14 +18,29 @@ android {
         applicationId = "com.nordlys.camera"
         minSdk = 26
         targetSdk = 35
-        versionCode = 7
-        versionName = "0.2.0-beta6"
+        versionCode = 8
+        versionName = "0.2.0-beta7"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+    }
+
+    signingConfigs {
+        val storePath = signingValue("NORDLYS_KEYSTORE_PATH")
+        if (storePath != null) {
+            create("release") {
+                storeFile = file(storePath)
+                storePassword = signingValue("NORDLYS_KEYSTORE_PASSWORD")
+                keyAlias = signingValue("NORDLYS_KEY_ALIAS")
+                keyPassword = signingValue("NORDLYS_KEY_PASSWORD")
+            }
+        }
     }
 
     buildTypes {
         release {
-            isMinifyEnabled = false
+            // Unsigned when no keystore is configured (e.g. contributors' local builds).
+            signingConfig = signingConfigs.findByName("release")
+            isMinifyEnabled = true
+            isShrinkResources = true
             proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
         }
     }
