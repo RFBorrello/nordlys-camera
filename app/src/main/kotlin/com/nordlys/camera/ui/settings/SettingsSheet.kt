@@ -77,6 +77,8 @@ fun SettingsSheet(
             Hint("Every photo is averaged down from the full sensor readout for lower noise. Keep the full-size file or the raw sensor data alongside it if you want to edit later.")
             Picker("Living images", prefs.living, listOf(false to "off", true to "on")) { onChange(prefs.copy(living = it)) }
             Hint("Keeps a moment of motion around each photo; it plays when you open the photo in the library.")
+            Picker("Location info", prefs.location, listOf(false to "off", true to "on")) { onChange(prefs.copy(location = it)) }
+            Hint("Saves where each photo was taken in the file, using the phone's location services.")
 
             Spacer(Modifier.height(12.dp))
             Action("reset camera settings", onReset)

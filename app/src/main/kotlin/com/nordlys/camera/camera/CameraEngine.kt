@@ -35,6 +35,7 @@ import com.nordlys.camera.model.FlashSetting
 import com.nordlys.camera.model.FocusSetting
 import com.nordlys.camera.model.ManualState
 import com.nordlys.camera.smart.YuvFrame
+import java.io.File
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.channels.Channel
@@ -73,6 +74,7 @@ class CameraEngine(private val context: Context) {
         private const val PRE_ROLL = 6
         private const val POST_ROLL = 6
         private const val ANALYSIS_MAX_PIXELS = 1920 * 1080
+        private const val SETTLE_TAG = "nordlys-settle"
     }
 
     private val manager = context.getSystemService(Context.CAMERA_SERVICE) as CameraManager
@@ -105,6 +107,8 @@ class CameraEngine(private val context: Context) {
 
     /** Device rotation in degrees (0/90/180/270, clockwise from natural), fed by the UI. */
     @Volatile var deviceOrientation: Int = 0
+    /** Latest fix to geotag stills with, or null when location info is off. */
+    @Volatile var location: android.location.Location? = null
 
     private val _meter = MutableStateFlow(Meter())
     val meter: StateFlow<Meter> = _meter
@@ -383,13 +387,25 @@ class CameraEngine(private val context: Context) {
         if (!needsFlashMeter && !needsAf) return
 
         val done = CompletableDeferred<Unit>()
+        // Only results from the trigger onwards count: frames already in flight still
+        // report the old CONVERGED state, and accepting one would skip the pre-flash.
+        var armed = false
+        var sincePrecapture = 0
+        var sawPrecapture = false
         val watcher = object : CameraCaptureSession.CaptureCallback() {
             override fun onCaptureCompleted(cs: CameraCaptureSession, r: CaptureRequest, result: TotalCaptureResult) {
                 meterCallback.onCaptureCompleted(cs, r, result)
+                if (r.tag == SETTLE_TAG) armed = true
+                if (!armed) return
+                sincePrecapture++
                 val ae = result.get(CaptureResult.CONTROL_AE_STATE)
                 val afNow = result.get(CaptureResult.CONTROL_AF_STATE)
-                val aeOk = !needsFlashMeter || ae == null || ae == CaptureResult.CONTROL_AE_STATE_CONVERGED ||
-                    ae == CaptureResult.CONTROL_AE_STATE_FLASH_REQUIRED || ae == CaptureResult.CONTROL_AE_STATE_LOCKED
+                if (ae == CaptureResult.CONTROL_AE_STATE_PRECAPTURE) sawPrecapture = true
+                // some HALs never report PRECAPTURE; give them a few frames to run the sequence
+                val aeSettled = sawPrecapture || sincePrecapture >= 4
+                val aeOk = !needsFlashMeter || ae == null || (aeSettled && ae != CaptureResult.CONTROL_AE_STATE_PRECAPTURE &&
+                    (ae == CaptureResult.CONTROL_AE_STATE_CONVERGED || ae == CaptureResult.CONTROL_AE_STATE_FLASH_REQUIRED ||
+                        ae == CaptureResult.CONTROL_AE_STATE_LOCKED))
                 val afOk = !needsAf || afNow == null || afNow == CaptureResult.CONTROL_AF_STATE_FOCUSED_LOCKED ||
                     afNow == CaptureResult.CONTROL_AF_STATE_NOT_FOCUSED_LOCKED || afNow == CaptureResult.CONTROL_AF_STATE_PASSIVE_FOCUSED
                 if (aeOk && afOk && !done.isCompleted) done.complete(Unit)
@@ -399,13 +415,15 @@ class CameraEngine(private val context: Context) {
             val trigger = d.createCaptureRequest(CameraDevice.TEMPLATE_PREVIEW).apply {
                 addTarget(p)
                 decorate(this, lastState, still = false)
+                setTag(SETTLE_TAG)
                 if (needsFlashMeter) set(CaptureRequest.CONTROL_AE_PRECAPTURE_TRIGGER, CameraMetadata.CONTROL_AE_PRECAPTURE_TRIGGER_START)
                 if (needsAf) set(CaptureRequest.CONTROL_AF_TRIGGER, CameraMetadata.CONTROL_AF_TRIGGER_START)
             }.build()
             s.capture(trigger, watcher, handler)
             buildPreviewRequest(lastState)?.let { s.setRepeatingRequest(it, watcher, handler) }
         }
-        withTimeoutOrNull(1200) { done.await() }
+        val settled = withTimeoutOrNull(if (needsFlashMeter) 2500L else 1200L) { done.await() } != null
+        if (!settled) Log.w(TAG, "settle timed out (flash meter=$needsFlashMeter, af=$needsAf)")
         apply(lastState)
     }
 
@@ -447,6 +465,7 @@ class CameraEngine(private val context: Context) {
                     rawReader?.let { addTarget(it.surface) }
                     decorate(this, state, still = true)
                     set(CaptureRequest.JPEG_ORIENTATION, jpegOrientation)
+                    location?.let { set(CaptureRequest.JPEG_GPS_LOCATION, it) }
                     set(CaptureRequest.JPEG_QUALITY, 96.toByte())
                     set(CaptureRequest.NOISE_REDUCTION_MODE, CameraMetadata.NOISE_REDUCTION_MODE_HIGH_QUALITY)
                 }.build()
@@ -460,6 +479,9 @@ class CameraEngine(private val context: Context) {
                     runCatching {
                         s.capture(request, object : CameraCaptureSession.CaptureCallback() {
                             override fun onCaptureCompleted(cs: CameraCaptureSession, r: CaptureRequest, result: TotalCaptureResult) {
+                                Log.i(TAG, "still: flash=${result.get(CaptureResult.FLASH_STATE)} ae=${result.get(CaptureResult.CONTROL_AE_STATE)} " +
+                                    "aeMode=${result.get(CaptureResult.CONTROL_AE_MODE)} iso=${result.get(CaptureResult.SENSOR_SENSITIVITY)} " +
+                                    "exp=${result.get(CaptureResult.SENSOR_EXPOSURE_TIME)} gps=${location != null}")
                                 resultGate.complete(result)
                             }
                         }, handler)
@@ -576,8 +598,26 @@ class CameraEngine(private val context: Context) {
                 aeLocked = false
                 apply(lastState)
             }
+            dumpSequence(frames)
             frames
         }
+
+    /**
+     * Tuning aid: when `files/dump-sequences` exists in the app's external files
+     * directory (create it over adb), the last sequence is written there as raw
+     * I420 planes so composites can be tuned off-device.
+     */
+    private fun dumpSequence(frames: List<YuvFrame>) {
+        val root = context.getExternalFilesDir(null) ?: return
+        if (!File(root, "dump-sequences").exists()) return
+        runCatching {
+            val dir = File(root, "last-sequence").apply { deleteRecursively(); mkdirs() }
+            File(dir, "meta.txt").writeText("rotation=${captureOrientation()}\nframes=${frames.size}\n")
+            frames.forEachIndexed { i, f ->
+                File(dir, "f$i-${f.width}x${f.height}.i420").outputStream().use { o -> o.write(f.y); o.write(f.u); o.write(f.v) }
+            }
+        }.onFailure { Log.w(TAG, "sequence dump failed", it) }
+    }
 
     // ---- clip recording --------------------------------------------------------
     suspend fun beginVideoRecording(audio: Boolean): Boolean = withContext(Dispatchers.Main) {

@@ -96,6 +96,7 @@ fun ViewfinderScreen(hasPermission: Boolean, audioGranted: Boolean = false, onOp
     val engine = remember { CameraEngine(context) }
     val store = remember { CameraPrefsStore(context) }
     val livingWriter = remember { LivingWriter(context) }
+    val tagger = remember { com.nordlys.camera.data.LocationTagger(context) { engine.location = it } }
 
     var prefs by remember { mutableStateOf(store.load()) }
     var dials by remember { mutableStateOf<OpenDials>(OpenDials.None) }
@@ -133,6 +134,24 @@ fun ViewfinderScreen(hasPermission: Boolean, audioGranted: Boolean = false, onOp
         if (ready) { if (recording) engine.applyDuringRecording(m) else engine.apply(m) }
     }
     fun say(text: String) { info = text; infoKey++ }
+
+    var locationAllowed by remember { mutableStateOf(tagger.granted()) }
+    val locationAsk = androidx.activity.compose.rememberLauncherForActivityResult(
+        androidx.activity.result.contract.ActivityResultContracts.RequestMultiplePermissions(),
+    ) { result ->
+        locationAllowed = result.values.any { it } || tagger.granted()
+        if (!locationAllowed) update(prefs.copy(location = false))
+    }
+    LaunchedEffect(prefs.location) {
+        if (prefs.location && !tagger.granted()) locationAsk.launch(
+            arrayOf(android.Manifest.permission.ACCESS_FINE_LOCATION, android.Manifest.permission.ACCESS_COARSE_LOCATION),
+        )
+    }
+    // track position only while the viewfinder is running and location info is on
+    DisposableEffect(ready, prefs.location, locationAllowed) {
+        if (ready && prefs.location && locationAllowed) tagger.start()
+        onDispose { tagger.stop() }
+    }
 
     val lensId = remember(hasPermission, prefs.front) {
         if (!hasPermission) null else if (prefs.front) engine.frontLensId ?: engine.backLensIds().firstOrNull() else engine.backLensIds().firstOrNull()
