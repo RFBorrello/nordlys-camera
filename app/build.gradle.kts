@@ -12,8 +12,8 @@ android {
         applicationId = "com.nordlys.camera"
         minSdk = 26
         targetSdk = 35
-        versionCode = 6
-        versionName = "0.2.0-beta5"
+        versionCode = 7
+        versionName = "0.2.0-beta6"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
 

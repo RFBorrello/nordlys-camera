@@ -213,6 +213,68 @@ never changed.
 
 ---
 
+## 10. Device verification: imaging (Galaxy S25, SM-S931U1, Android 16)
+
+Measured on the phone over adb on 2026-10-15. The back camera delivers a 4080×3060 (12.5 MP)
+JPEG, and the smart sequence analyses 7 YUV frames at 1440×1080.
+Sequences can be dumped for off-device tuning: create `files/dump-sequences` in the app's external
+files dir, and each sequence lands in `files/sequences/<ms>/` as raw I420. `SmartTuningTest` (JVM)
+renders composites from a dump, and `ChangeFacesDeviceTest`/`ChangeFacesUiTest` run change faces on the phone.
+
+**Oversampling.** 12.5 MP → 5 MP (2582×1936, 1.58× linear) by area average. This matches an ideal box
+downsample within 1.3 levels. The output was measured the same way throughout: high-pass σ on the
+flattest tiles for noise, and the 99th-percentile gradient for acutance.
+
+| ISO 91 scene | noise σ | acutance |
+|---|---|---|
+| full-resolution JPEG | 1.28–1.47 | 28.0–29.3 |
+| ideal box downsample to 5 MP | 1.16–1.29 | 29.9–31.3 |
+| Nordlys 5 MP, q94, no sharpen (beta4) | 0.48 | 26.4 |
+| **Nordlys 5 MP, q96 + unsharp 0.4 (beta6)** | **0.62** | **31.8** |
+
+Android's JPEG encoder at quality 94 cost about 12% acutance, so the target stays 5 MP. A 3×3 unsharp
+mask (amount 0.4, ±3-level threshold) after the resample brings detail back to the ideal downsample
+with no measurable added noise. At ISO 3395 the ISP already denoises hard: the full-resolution file
+measured 1.63 and the oversampled one 1.53, with text equally legible.
+EXIF survives oversampling: date/time, exposure, f-number, ISO, flash, focal length, white balance, and
+GPS latitude/longitude/altitude/time when **Location info** (new setting) is on.
+
+**Flash.** The precapture wait now only accepts results from the trigger frame onwards, and waits for
+AE to leave PRECAPTURE. It falls back after 4 frames for HALs that never report that state, with a
+2.5 s timeout. On the phone no settle ever timed out.
+- On: FLASH_STATE=FIRED, AE=FLASH_REQUIRED, ISO 36–50. Exposure is good, with a hotspot only on a lid a few cm away.
+- Auto: in a bright room no flash (READY). In the dim area under a desk the flash fired (ISO 88,
+  mean level 108, 1% clipped). Without flash the same scene metered ISO 860 at 1/30 and came out dark (mean 64).
+- Red-eye: this HAL lists AE modes 0–3 only (no ON_AUTO_FLASH_REDEYE), so there is no driver red-eye
+  pre-flash. Software red-eye removal is not implemented.
+
+**Smart sequences.** On real hand-held sequences (a hand gesturing, a bottle moved and turned):
+- Stabilisation was the real problem. The old aligner compared signed bytes and searched only ±8 px,
+  but hand drift over 2 s reached 28 px with up to 1% scale. Now a coarse-to-fine global search
+  (±96 px) seeds the block search, an affine model is fitted to textured inlier blocks in two passes,
+  and frames are warped bilinearly. Monitor edges and text no longer ghost in remove-moving or action shot.
+- Motion mask thresholds 14/34 → **20/44**: the lower pair pasted blocky patches where screen content
+  and a clear bottle's refractions shimmer. Moving hands and objects are still fully picked up.
+- Motion focus box stays at 0.22 of the short side. 0.26 pulled background into the subject
+  alignment and doubled the bottle's edges. The subject core is now restored whole, and only the rim
+  uses agreement with the average, so a turning subject (the bottle's label) stays sharp.
+- Speed, on the same frames (10-core Mac JVM; old single-threaded → banded coroutines): stabilise
+  216 → 59 ms, median 89–103 → 14–27 ms, action shot 153–169 → 31–43 ms. On the phone: stabilise
+  0.5–0.9 s, median 0.06–0.2 s, motion focus 0.45 s, action shot 0.7 s.
+- Known limit: a subject filling most of the frame (the hand) cannot be removed, because the median
+  needs background in most frames.
+
+**Change faces.** Faces are detected with `android.media.FaceDetector` on each stabilised frame at
+640 px (about 40 ms per frame on the phone), then merged across frames. A face with closed eyes was
+still found in every frame. Tap a face and pick the frame it should come from. It is blended in as a
+feathered ellipse, nudged by a local search. On the phone, a closed-eye frame took the open-eyed face
+from frame 0 in 157 ms with no visible seam at the hairline, beard or collar.
+
+Evidence: `docs/device-tests/oversampling-100pct-crops.jpg` (matched-field 100% crops, full-resolution vs
+oversampled) and `docs/device-tests/smart-hand-old-vs-new.jpg` (remove/action/motion, beta4 code vs this
+pass, on the same dumped frames). The face and bottle comparisons are kept out of the repo because they
+show people and screen contents.
+
 ## Gap analysis (Nordlys v0.1.0 → this pass)
 
 | Area | v0.1.0 | Gap | This pass |
@@ -225,11 +287,12 @@ never changed.
 | Indicators | — | No strip, no live readouts, no danger marks | §4 strip, basic/advanced |
 | Focus | No tap-to-focus | | Tap AF/AE regions + reticle |
 | Semi-auto | Manual ISO ignored under AE; shutter likewise | Broken | Priority exposure from live metering |
-| Flash | off/on/torch | No auto | auto/off/on, torch in video |
+| Flash | off/on/torch | No auto | auto/off/on, torch in video; precapture verified on device (§10) |
+| Geotagging | Location permission unused | No GPS in files | Location info setting, GPS kept on the oversampled file |
 | Scene modes | — | | auto / night / sport |
 | JPEG orientation | Not set (sideways files) | Bug | Device-orientation aware |
 | Oversampling | — | Core of the image character | Oversampled default + optional full-res |
-| Smart mode | 7-frame temporal median → one JPEG | Different feature | Timed sequence + editor (best shot, remove objects, action shot, motion focus) |
-| Change faces | — | Needs face pipeline | **Deferred** |
+| Smart mode | 7-frame temporal median → one JPEG | Different feature | Timed sequence + editor (best shot, remove objects, action shot, motion focus, change faces); affine stabilisation (§10) |
+| Change faces | — | Needs face pipeline | Done: FaceDetector per frame, tap face → pick frame, feathered blend (§10) |
 | Living Images | First pass (≈12 JPEG frames cycled) | Not a clip; no playback gate | §8: rolling H.264 buffer → MP4 sidecar; plays once when swiped to; playback setting |
 | Video | Works | Indicator/torch UI; no quality setting, small timer, no trim | Wheel + torch cell; §9 resolution/fps, timer readout, built-in trimmer |
