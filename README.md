@@ -28,6 +28,9 @@ line of code, UI string, icon, and theme token here is authored fresh.
 | Settings sheet (about, reset) | shipped |
 
 Known gaps and next steps are tracked in [docs/FEATURE_SPEC.md](docs/FEATURE_SPEC.md).
+The viewfinder's interaction design — concentric pro dials around the shutter,
+the mode-wheel shutter, the indicator strip, oversampled stills and the smart
+sequence editor — is specified in [docs/LUMIA_PARITY.md](docs/LUMIA_PARITY.md).
 
 ## Building
 

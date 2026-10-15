@@ -27,12 +27,17 @@ class VideoRecorder(private val context: Context) {
         private set
 
     /** Builds the encoder and returns its input surface for the session. */
-    fun prepare(audio: Boolean, lensId: String?): Surface {
+    /** The encoder input while a clip is being prepared or recorded. */
+    var surface: Surface? = null
+        private set
+
+    fun prepare(audio: Boolean, lensId: String?, orientationHint: Int = 0): Surface {
         releaseRecorder()
         val r = MediaRecorder()
         recorder = r
         r.setVideoSource(MediaRecorder.VideoSource.SURFACE)
         if (audio) r.setAudioSource(MediaRecorder.AudioSource.MIC)
+        r.setOutputFormat(MediaRecorder.OutputFormat.MPEG_4)
 
         val profile = resolveProfile(lensId, audio)
         r.setVideoEncodingBitRate(profile.bitRate)
@@ -46,10 +51,11 @@ class VideoRecorder(private val context: Context) {
             r.setAudioEncoder(MediaRecorder.AudioEncoder.AAC)
         }
 
-        r.setOutputFormat(MediaRecorder.OutputFormat.MPEG_4)
+        r.setOrientationHint(orientationHint)
         val base = ContentValues().apply {
             put(MediaStore.Video.Media.DISPLAY_NAME, "Nordlys_clip_${System.currentTimeMillis()}.mp4")
             put(MediaStore.Video.Media.MIME_TYPE, "video/mp4")
+            put(MediaStore.Video.Media.RELATIVE_PATH, "DCIM/Nordlys")
             put(MediaStore.Video.Media.IS_PENDING, 1)
         }
         val uri = context.contentResolver.insert(MediaStore.Video.Media.EXTERNAL_CONTENT_URI, base)
@@ -62,7 +68,7 @@ class VideoRecorder(private val context: Context) {
             releaseRecorder()
             throw it
         }
-        return r.surface
+        return r.surface.also { surface = it }
     }
 
     /**
@@ -119,6 +125,7 @@ class VideoRecorder(private val context: Context) {
         runCatching { recorder?.reset() }
         runCatching { recorder?.release() }
         recorder = null
+        surface = null
         runCatching { outputFd?.close() }
         outputFd = null
     }

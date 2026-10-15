@@ -38,6 +38,11 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         enableEdgeToEdge()
         super.onCreate(savedInstanceState)
+        // the viewfinder owns the whole display, like the reference
+        androidx.core.view.WindowCompat.getInsetsController(window, window.decorView).apply {
+            hide(androidx.core.view.WindowInsetsCompat.Type.systemBars())
+            systemBarsBehavior = androidx.core.view.WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+        }
         cameraGranted = hasCamera()
         audioGranted = checkSelfPermission(Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED
         val wanted = buildList {
@@ -71,7 +76,7 @@ class MainActivity : ComponentActivity() {
                         },
                     )
                 } else {
-                    var destination by rememberSaveable { mutableStateOf<Destination>(Destination.Camera) }
+                    var destination by androidx.compose.runtime.remember { mutableStateOf<Destination>(Destination.Camera) }
                     when (destination) {
                         Destination.Camera -> ViewfinderScreen(
                             hasPermission = cameraGranted,

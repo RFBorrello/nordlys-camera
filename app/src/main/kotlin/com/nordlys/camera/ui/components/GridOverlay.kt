@@ -5,33 +5,34 @@ import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.Path
-import androidx.compose.ui.graphics.StrokeCap
 import com.nordlys.camera.model.GridType
-import com.nordlys.camera.ui.theme.MetroForegroundDim
 
-/** Viewfinder overlays: composition grids drawn as thin Metro hairlines. */
+/** Composition guides over the preview: white hairlines at 70 %. */
 @Composable
 fun GridOverlay(
     grid: GridType,
     modifier: Modifier = Modifier,
 ) {
+    if (grid == GridType.NONE) return
     Canvas(modifier = modifier) {
-        val stroke = 1f
-        val lineColor = MetroForegroundDim.copy(alpha = 0.45f)
-        fun vertical(x: Float, yStart: Float = 0f, yEnd: Float = size.height) {
-            drawLine(lineColor, Offset(x, yStart), Offset(x, yEnd), strokeWidth = stroke, cap = StrokeCap.Square)
-        }
-        fun horizontal(y: Float, xStart: Float = 0f, xEnd: Float = size.width) {
-            drawLine(lineColor, Offset(xStart, y), Offset(xEnd, y), strokeWidth = stroke, cap = StrokeCap.Square)
-        }
+        val color = Color.White.copy(alpha = 0.7f)
+        val stroke = 1.2f
+        fun v(x: Float) = drawLine(color, Offset(x, 0f), Offset(x, size.height), stroke)
+        fun h(y: Float) = drawLine(color, Offset(0f, y), Offset(size.width, y), stroke)
         when (grid) {
-            GridType.NONE -> {}
-            GridType.RULE_OF_THIRDS, GridType.GOLDEN_RATIO, GridType.SQUARE -> {
-                val divisions = if (grid == GridType.GOLDEN_RATIO) floatArrayOf(0.382f, 0.618f) else floatArrayOf(1f / 3f, 2f / 3f)
-                divisions.forEach { f ->
-                    vertical(size.width * f)
-                    horizontal(size.height * f)
+            GridType.NONE -> Unit
+            GridType.THIRDS -> listOf(1f / 3f, 2f / 3f).forEach { v(size.width * it); h(size.height * it) }
+            GridType.GOLDEN -> listOf(0.382f, 0.618f).forEach { v(size.width * it); h(size.height * it) }
+            GridType.CROSSHAIR -> { v(size.width / 2f); h(size.height / 2f) }
+            GridType.SQUARE -> {
+                // the largest centred square, marked on the long sides
+                val side = minOf(size.width, size.height)
+                if (size.height > size.width) {
+                    val top = (size.height - side) / 2f
+                    h(top); h(top + side)
+                } else {
+                    val left = (size.width - side) / 2f
+                    v(left); v(left + side)
                 }
             }
         }

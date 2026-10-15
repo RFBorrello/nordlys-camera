@@ -30,5 +30,6 @@ class NordlysApp : Application() {
             prior?.uncaughtException(thread, e)
         }
         super.onCreate()
+        com.nordlys.camera.ui.viewfinder.NordlysTypefaces.init(this)
     }
 }
