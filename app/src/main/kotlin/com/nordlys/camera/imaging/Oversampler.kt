@@ -23,6 +23,11 @@ import kotlin.math.sqrt
  */
 object Oversampler {
 
+    /** Unsharp-mask strength applied after the resample (0 = off). */
+    const val SHARPEN = 0.4f
+    /** Differences smaller than this (8-bit levels) are left alone so flat noise is not amplified. */
+    private const val SHARPEN_THRESHOLD = 3
+
     /** Output megapixels for a sensor of [sourcePixels]: at least 1.5× linear oversampling, 5–12 MP. */
     fun targetPixels(sourcePixels: Long): Long {
         val quarter = sourcePixels / 4
@@ -36,7 +41,7 @@ object Oversampler {
      * @param exif metadata copied onto the output (exposure, ISO, timestamps).
      * @param scratch a writable directory for the EXIF round trip.
      */
-    fun oversample(sourceJpeg: ByteArray, scratch: File, quality: Int = 94): Result? {
+    fun oversample(sourceJpeg: ByteArray, scratch: File, quality: Int = 96, sharpen: Float = SHARPEN): Result? {
         val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
         BitmapFactory.decodeByteArray(sourceJpeg, 0, sourceJpeg.size, bounds)
         val srcW = bounds.outWidth
@@ -71,6 +76,7 @@ object Oversampler {
 
         val averaged = if (decoded.width == outW && decoded.height == outH) decoded
         else areaResample(decoded, outW, outH).also { decoded.recycle() }
+        if (sharpen > 0f) unsharp(averaged, sharpen)
         val shaped = if (rotation == 0) averaged else {
             val m = Matrix().apply { postRotate(rotation.toFloat()) }
             Bitmap.createBitmap(averaged, 0, 0, averaged.width, averaged.height, m, false)
@@ -172,16 +178,61 @@ object Oversampler {
         return out
     }
 
+    /**
+     * In-place unsharp mask with a 3×3 binomial blur, streamed three rows at a
+     * time: out = c + amount·(c − blur), skipped below [SHARPEN_THRESHOLD].
+     */
+    fun unsharp(bmp: Bitmap, amount: Float) {
+        val w = bmp.width
+        val h = bmp.height
+        if (w < 3 || h < 3) return
+        var above = IntArray(w)
+        var here = IntArray(w)
+        var below = IntArray(w)
+        val out = IntArray(w)
+        bmp.getPixels(here, 0, w, 0, 0, w, 1)
+        here.copyInto(above)
+        for (y in 0 until h) {
+            if (y + 1 < h) bmp.getPixels(below, 0, w, 0, y + 1, w, 1) else here.copyInto(below)
+            for (x in 0 until w) {
+                val l = if (x > 0) x - 1 else x
+                val r = if (x < w - 1) x + 1 else x
+                var px = 0xFF shl 24
+                var shift = 16
+                while (shift >= 0) {
+                    val blur = (ch(above[l], shift) + 2 * ch(above[x], shift) + ch(above[r], shift) +
+                        2 * ch(here[l], shift) + 4 * ch(here[x], shift) + 2 * ch(here[r], shift) +
+                        ch(below[l], shift) + 2 * ch(below[x], shift) + ch(below[r], shift) + 8) shr 4
+                    val v = ch(here[x], shift)
+                    val d = v - blur
+                    val o = if (d > SHARPEN_THRESHOLD || d < -SHARPEN_THRESHOLD) (v + amount * d + 0.5f).toInt().coerceIn(0, 255) else v
+                    px = px or (o shl shift)
+                    shift -= 8
+                }
+                out[x] = px
+            }
+            bmp.setPixels(out, 0, w, 0, y, w, 1)
+            // rotate the window; `here` keeps the unsharpened row for the next pass
+            val t = above; above = here; here = below; below = t
+        }
+    }
+
+    private fun ch(p: Int, shift: Int) = (p shr shift) and 0xFF
+
     private val COPIED_TAGS = listOf(
         ExifInterface.TAG_DATETIME, ExifInterface.TAG_DATETIME_ORIGINAL, ExifInterface.TAG_DATETIME_DIGITIZED,
         ExifInterface.TAG_OFFSET_TIME, ExifInterface.TAG_OFFSET_TIME_ORIGINAL,
         ExifInterface.TAG_SUBSEC_TIME, ExifInterface.TAG_SUBSEC_TIME_ORIGINAL,
         ExifInterface.TAG_MAKE, ExifInterface.TAG_MODEL,
         ExifInterface.TAG_EXPOSURE_TIME, ExifInterface.TAG_F_NUMBER, ExifInterface.TAG_ISO_SPEED_RATINGS,
-        ExifInterface.TAG_FOCAL_LENGTH, ExifInterface.TAG_FLASH, ExifInterface.TAG_WHITE_BALANCE,
-        ExifInterface.TAG_EXPOSURE_BIAS_VALUE, ExifInterface.TAG_APERTURE_VALUE,
+        ExifInterface.TAG_FOCAL_LENGTH, ExifInterface.TAG_FOCAL_LENGTH_IN_35MM_FILM, ExifInterface.TAG_FLASH,
+        ExifInterface.TAG_WHITE_BALANCE, ExifInterface.TAG_EXPOSURE_BIAS_VALUE, ExifInterface.TAG_APERTURE_VALUE,
+        ExifInterface.TAG_SHUTTER_SPEED_VALUE, ExifInterface.TAG_EXPOSURE_PROGRAM, ExifInterface.TAG_EXPOSURE_MODE,
+        ExifInterface.TAG_METERING_MODE, ExifInterface.TAG_SCENE_CAPTURE_TYPE, ExifInterface.TAG_LIGHT_SOURCE,
         ExifInterface.TAG_GPS_LATITUDE, ExifInterface.TAG_GPS_LATITUDE_REF,
         ExifInterface.TAG_GPS_LONGITUDE, ExifInterface.TAG_GPS_LONGITUDE_REF,
+        ExifInterface.TAG_GPS_ALTITUDE, ExifInterface.TAG_GPS_ALTITUDE_REF,
+        ExifInterface.TAG_GPS_TIMESTAMP, ExifInterface.TAG_GPS_DATESTAMP, ExifInterface.TAG_GPS_PROCESSING_METHOD,
     )
 
     private fun copyExif(source: ExifInterface?, jpeg: ByteArray, scratch: File): ByteArray {

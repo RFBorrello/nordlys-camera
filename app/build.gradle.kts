@@ -18,8 +18,9 @@ android {
         applicationId = "com.nordlys.camera"
         minSdk = 26
         targetSdk = 35
-        versionCode = 5
-        versionName = "0.2.0-beta4"
+        versionCode = 7
+        versionName = "0.2.0-beta6"
+        testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
 
     signingConfigs {
@@ -53,6 +54,10 @@ android {
     buildFeatures {
         compose = true
     }
+    // the smart-sequence tuning harness runs the real compositor on the JVM
+    testOptions {
+        unitTests.isReturnDefaultValues = true
+    }
 }
 
 dependencies {
@@ -68,4 +73,11 @@ dependencies {
     implementation(libs.androidx.lifecycle.compose)
     implementation(libs.coil.compose)
     implementation(libs.coil.video)
+    testImplementation(libs.junit)
+    androidTestImplementation(libs.androidx.test.runner)
+    androidTestImplementation(libs.androidx.test.junit)
+    androidTestImplementation(platform(libs.compose.bom))
+    androidTestImplementation(libs.compose.ui.test.junit4)
+    debugImplementation(libs.compose.ui.test.manifest)
+    androidTestImplementation(libs.compose.ui.test.manifest)
 }
