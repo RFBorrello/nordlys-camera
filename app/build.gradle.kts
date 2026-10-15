@@ -1,3 +1,9 @@
+// Release signing comes from Gradle properties (~/.gradle/gradle.properties) or
+// environment variables of the same name — never from files in this repo.
+fun signingValue(name: String): String? =
+    (project.findProperty(name) as String?)?.takeIf { it.isNotBlank() }
+        ?: System.getenv(name)?.takeIf { it.isNotBlank() }
+
 plugins {
     alias(libs.plugins.android.application)
     alias(libs.plugins.kotlin.android)
@@ -12,13 +18,29 @@ android {
         applicationId = "com.nordlys.camera"
         minSdk = 26
         targetSdk = 35
-        versionCode = 1
-        versionName = "0.1.0"
+        versionCode = 8
+        versionName = "0.2.0-beta7"
+        testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+    }
+
+    signingConfigs {
+        val storePath = signingValue("NORDLYS_KEYSTORE_PATH")
+        if (storePath != null) {
+            create("release") {
+                storeFile = file(storePath)
+                storePassword = signingValue("NORDLYS_KEYSTORE_PASSWORD")
+                keyAlias = signingValue("NORDLYS_KEY_ALIAS")
+                keyPassword = signingValue("NORDLYS_KEY_PASSWORD")
+            }
+        }
     }
 
     buildTypes {
         release {
-            isMinifyEnabled = false
+            // Unsigned when no keystore is configured (e.g. contributors' local builds).
+            signingConfig = signingConfigs.findByName("release")
+            isMinifyEnabled = true
+            isShrinkResources = true
             proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
         }
     }
@@ -31,6 +53,10 @@ android {
     }
     buildFeatures {
         compose = true
+    }
+    // the smart-sequence tuning harness runs the real compositor on the JVM
+    testOptions {
+        unitTests.isReturnDefaultValues = true
     }
 }
 
@@ -46,4 +72,12 @@ dependencies {
     implementation(libs.kotlinx.coroutines.android)
     implementation(libs.androidx.lifecycle.compose)
     implementation(libs.coil.compose)
+    implementation(libs.coil.video)
+    testImplementation(libs.junit)
+    androidTestImplementation(libs.androidx.test.runner)
+    androidTestImplementation(libs.androidx.test.junit)
+    androidTestImplementation(platform(libs.compose.bom))
+    androidTestImplementation(libs.compose.ui.test.junit4)
+    debugImplementation(libs.compose.ui.test.manifest)
+    androidTestImplementation(libs.compose.ui.test.manifest)
 }

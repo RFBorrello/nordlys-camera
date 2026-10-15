@@ -38,6 +38,7 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         enableEdgeToEdge()
         super.onCreate(savedInstanceState)
+        enterCameraChrome(true)
         cameraGranted = hasCamera()
         audioGranted = checkSelfPermission(Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED
         val wanted = buildList {
@@ -71,17 +72,36 @@ class MainActivity : ComponentActivity() {
                         },
                     )
                 } else {
-                    var destination by rememberSaveable { mutableStateOf<Destination>(Destination.Camera) }
+                    var destination by androidx.compose.runtime.remember { mutableStateOf<Destination>(Destination.Camera) }
+                    androidx.compose.runtime.LaunchedEffect(destination) { enterCameraChrome(destination == Destination.Camera) }
                     when (destination) {
                         Destination.Camera -> ViewfinderScreen(
                             hasPermission = cameraGranted,
                             audioGranted = audioGranted,
                             onOpenGallery = { destination = Destination.Library },
                         )
-                        Destination.Library -> GalleryScreen(onClose = { destination = Destination.Camera })
+                        Destination.Library -> {
+                            androidx.activity.compose.BackHandler { destination = Destination.Camera }
+                            GalleryScreen(onClose = { destination = Destination.Camera })
+                        }
                     }
                 }
             }
+        }
+    }
+
+    /**
+     * The viewfinder owns the whole display in a fixed portrait frame (glyphs
+     * rotate instead); the library follows the device and shows system bars.
+     */
+    private fun enterCameraChrome(camera: Boolean) {
+        requestedOrientation = if (camera) android.content.pm.ActivityInfo.SCREEN_ORIENTATION_PORTRAIT
+        else android.content.pm.ActivityInfo.SCREEN_ORIENTATION_FULL_USER
+        androidx.core.view.WindowCompat.getInsetsController(window, window.decorView).apply {
+            if (camera) {
+                hide(androidx.core.view.WindowInsetsCompat.Type.systemBars())
+                systemBarsBehavior = androidx.core.view.WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+            } else show(androidx.core.view.WindowInsetsCompat.Type.systemBars())
         }
     }
 

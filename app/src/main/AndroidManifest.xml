@@ -23,7 +23,7 @@
             android:name=".MainActivity"
             android:configChanges="orientation|screenSize|screenLayout|keyboardHidden"
             android:exported="true"
-            android:screenOrientation="fullSensor"
+            android:screenOrientation="portrait"
             android:theme="@style/Theme.Nordlys">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />

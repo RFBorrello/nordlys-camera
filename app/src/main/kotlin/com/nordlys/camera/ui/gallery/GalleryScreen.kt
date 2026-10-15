@@ -16,6 +16,14 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.systemBarsPadding
+import androidx.compose.foundation.layout.safeDrawingPadding
+import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.WindowInsetsSides
+import androidx.compose.foundation.layout.only
+import androidx.compose.foundation.layout.safeDrawing
+import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items as gridItems
@@ -42,7 +50,7 @@ import androidx.compose.foundation.layout.size
 import coil.compose.AsyncImage
 import com.nordlys.camera.data.GalleryItem
 import com.nordlys.camera.data.MediaStoreRepository
-import com.nordlys.camera.living.LivingReader
+import com.nordlys.camera.living.LivingStore
 import com.nordlys.camera.ui.components.MetroPivot
 import com.nordlys.camera.ui.theme.MetroAccent
 import com.nordlys.camera.ui.theme.MetroForeground
@@ -78,7 +86,7 @@ fun GalleryScreen(onClose: () -> Unit) {
             items = list,
             startIndex = openIndex!!,
             repo = repo,
-            reader = remember { LivingReader(context) },
+            reader = remember { LivingStore(context) },
             onClose = { openIndex = null },
             onDeleted = { r: MediaStoreRepository ->
                 scope.launch {
@@ -90,7 +98,7 @@ fun GalleryScreen(onClose: () -> Unit) {
     }
 
     Box(Modifier.fillMaxSize().background(Color(0xFF101010))) {
-        Column(Modifier.fillMaxSize().systemBarsPadding()) {
+        Column(Modifier.fillMaxSize().safeDrawingPadding()) {
             MetroPivot(
                 items = listOf("Gallery", "Videos"),
                 selected = pivot,
@@ -110,7 +118,7 @@ fun GalleryScreen(onClose: () -> Unit) {
                 }
             } else {
                 LazyVerticalGrid(
-                    columns = GridCells.Fixed(3),
+                    columns = GridCells.Adaptive(120.dp),
                     modifier = Modifier.weight(1f).fillMaxWidth(),
                     horizontalArrangement = Arrangement.spacedBy(1.dp),
                     verticalArrangement = Arrangement.spacedBy(1.dp),
@@ -148,7 +156,7 @@ private fun ViewerScreen(
     items: List<GalleryItem>,
     startIndex: Int,
     repo: MediaStoreRepository,
-    reader: LivingReader,
+    reader: LivingStore,
     onClose: () -> Unit,
     onDeleted: (MediaStoreRepository) -> Unit,
 ) {
@@ -156,31 +164,91 @@ private fun ViewerScreen(
     val scope = rememberCoroutineScope()
     var infoOpen by remember { mutableStateOf(false) }
     var confirmDelete by remember { mutableStateOf(false) }
-    val pagerState = rememberPagerState(pageCount = { items.size })
+    var trimming by remember { mutableStateOf<GalleryItem?>(null) }
+    val playLiving = remember { com.nordlys.camera.data.CameraPrefsStore(context).load().playLiving }
+    val pagerState = rememberPagerState(initialPage = startIndex, pageCount = { items.size })
+    var zoomed by remember { mutableStateOf(false) }
+    var chrome by remember { mutableStateOf(true) }
+    var touchedAt by remember { mutableStateOf(0L) }
+    val controllers = remember { androidx.compose.runtime.mutableStateMapOf<Long, VideoController>() }
+    val current = items.getOrNull(pagerState.currentPage)
+    val currentVideo = current?.let { controllers[it.id] }
+    androidx.activity.compose.BackHandler(enabled = !infoOpen && !confirmDelete, onBack = onClose)
+
+    // tap shows/hides everything, system bars included, so the picture can stand alone
+    val view = androidx.compose.ui.platform.LocalView.current
+    LaunchedEffect(chrome) {
+        val window = (view.context as? android.app.Activity)?.window ?: return@LaunchedEffect
+        androidx.core.view.WindowCompat.getInsetsController(window, view).apply {
+            systemBarsBehavior = androidx.core.view.WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+            if (chrome) show(androidx.core.view.WindowInsetsCompat.Type.systemBars())
+            else hide(androidx.core.view.WindowInsetsCompat.Type.systemBars())
+        }
+    }
+    androidx.compose.runtime.DisposableEffect(Unit) {
+        onDispose {
+            (view.context as? android.app.Activity)?.window?.let {
+                androidx.core.view.WindowCompat.getInsetsController(it, view).show(androidx.core.view.WindowInsetsCompat.Type.systemBars())
+            }
+        }
+    }
+    // while a clip plays, the chrome steps aside after five quiet seconds
+    LaunchedEffect(chrome, currentVideo?.playing, touchedAt) {
+        if (chrome && currentVideo?.playing == true) {
+            kotlinx.coroutines.delay(5000)
+            chrome = false
+        }
+    }
 
     Box(Modifier.fillMaxSize().background(Color.Black)) {
-        HorizontalPager(state = pagerState, modifier = Modifier.fillMaxSize()) { page ->
+        HorizontalPager(state = pagerState, userScrollEnabled = !zoomed, modifier = Modifier.fillMaxSize()) { page ->
             val item = items.getOrNull(page) ?: return@HorizontalPager
-            val clip = remember(item.id) { if (item.isVideo) null else reader.clipFor(item.uri) }
-            Box(Modifier.fillMaxSize().systemBarsPadding(), contentAlignment = Alignment.Center) {
-                if (item.isVideo) VideoPlayback(item)
-                else if (clip != null) {
-                    LivingPlayback(clip = clip, reader = reader, active = pagerState.currentPage == page)
+            val clip = remember(item.id) { if (item.isVideo || !playLiving) null else reader.clipFor(item.uri) }
+            val toggle = { chrome = !chrome; touchedAt = System.currentTimeMillis() }
+            Box(
+                Modifier.fillMaxSize().then(
+                    if (item.isVideo) Modifier.pointerInput(Unit) { detectTapGestures(onTap = { toggle() }) } else Modifier,
+                ),
+                contentAlignment = Alignment.Center,
+            ) {
+                if (item.isVideo) {
+                    val controller = remember(item.id) { VideoController(android.media.MediaPlayer()) }
+                    androidx.compose.runtime.DisposableEffect(item.id) {
+                        controllers[item.id] = controller
+                        onDispose { controllers.remove(item.id) }
+                    }
+                    VideoPlayback(item, controller, active = pagerState.currentPage == page, chromeVisible = chrome, onInteract = { touchedAt = System.currentTimeMillis() })
                 }
-                else AsyncImage(
-                    model = item.uri,
-                    contentDescription = item.displayName,
-                    contentScale = ContentScale.Fit,
-                    modifier = Modifier.fillMaxSize(),
-                )
+                else {
+                    ZoomableImage(
+                        item.uri, item.displayName,
+                        onZoomedChange = { z -> zoomed = z; if (z) chrome = false },
+                        onTap = toggle,
+                    )
+                    // a living image comes alive once the pager settles on it (§8)
+                    clip?.let { LivingClipOverlay(it, play = pagerState.settledPage == page && !zoomed) }
+                }
             }
         }
 
-        Column(Modifier.fillMaxSize().systemBarsPadding()) {
-            Row(Modifier.fillMaxWidth().padding(horizontal = 20.dp)) {
+        androidx.compose.animation.AnimatedVisibility(
+            visible = chrome,
+            enter = androidx.compose.animation.fadeIn(androidx.compose.animation.core.tween(300)),
+            exit = androidx.compose.animation.fadeOut(androidx.compose.animation.core.tween(300)),
+        ) {
+        Column(Modifier.fillMaxSize()) {
+            Row(
+                Modifier
+                    .fillMaxWidth()
+                    .background(Color.Black.copy(alpha = 0.45f))
+                    .windowInsetsPadding(WindowInsets.safeDrawing.only(WindowInsetsSides.Top + WindowInsetsSides.Horizontal))
+                    .padding(horizontal = 20.dp, vertical = 6.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
                 Text(
                     text = "Library",
                     style = MaterialTheme.typography.headlineMedium,
+                    color = MetroForeground,
                     modifier = Modifier
                         .clickable(interactionSource = remember { MutableInteractionSource() }, indication = null, onClick = onClose),
                 )
@@ -192,8 +260,15 @@ private fun ViewerScreen(
                 )
             }
             Spacer(Modifier.weight(1f))
+            currentVideo?.let { c ->
+                if (c.started) VideoControls(c, onInteract = { touchedAt = System.currentTimeMillis() }, modifier = Modifier.padding(bottom = 8.dp))
+            }
             Row(
-                Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 20.dp),
+                Modifier
+                    .fillMaxWidth()
+                    .background(Color.Black.copy(alpha = 0.45f))
+                    .windowInsetsPadding(WindowInsets.safeDrawing.only(WindowInsetsSides.Bottom + WindowInsetsSides.Horizontal))
+                    .padding(horizontal = 20.dp, vertical = 8.dp),
                 horizontalArrangement = Arrangement.SpaceBetween,
             ) {
                 ViewerAction("Share") {
@@ -205,12 +280,32 @@ private fun ViewerScreen(
                     }
                     context.startActivity(Intent.createChooser(send, "Share with"))
                 }
-                ViewerAction("Edit later") { /* open with external editor chooser – Phase 3+ */ }
+                ViewerAction("Edit later") {
+                    val item = items.getOrNull(pagerState.currentPage) ?: return@ViewerAction
+                    if (item.isVideo) {
+                        currentVideo?.pause()
+                        trimming = item
+                    } else {
+                        val edit = Intent(Intent.ACTION_EDIT).apply {
+                            setDataAndType(item.uri, context.contentResolver.getType(item.uri) ?: "image/jpeg")
+                            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION)
+                        }
+                        runCatching { context.startActivity(Intent.createChooser(edit, "Edit with")) }
+                    }
+                }
                 ViewerAction("Remove") { confirmDelete = true }
                 ViewerAction("Details") { infoOpen = true }
             }
         }
+        }
 
+        trimming?.let { item ->
+            TrimmerScreen(
+                item = item,
+                onClose = { trimming = null },
+                onSaved = { trimming = null; onDeleted(repo); onClose() },
+            )
+        }
         if (infoOpen) {
             val item = items.getOrNull(pagerState.currentPage) ?: return@ViewerScreen
             InfoSheet(
