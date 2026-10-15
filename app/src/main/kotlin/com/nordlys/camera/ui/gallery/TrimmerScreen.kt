@@ -24,6 +24,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.systemBarsPadding
+import androidx.compose.foundation.systemGestureExclusion
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -141,7 +142,8 @@ fun TrimmerScreen(item: GalleryItem, onClose: () -> Unit, onSaved: () -> Unit) {
         }
 
         // film strip with the two handles; the parts left out are dimmed
-        BoxWithConstraints(Modifier.fillMaxWidth().height(64.dp)) {
+        // the handles sit at the screen edges, so keep the system back gesture off the strip
+        BoxWithConstraints(Modifier.fillMaxWidth().height(64.dp).systemGestureExclusion()) {
             val widthPx = constraints.maxWidth.toFloat()
             Row(Modifier.fillMaxSize()) {
                 if (strip.isEmpty()) Box(Modifier.fillMaxSize().background(Color(0xFF1F1F1F)))

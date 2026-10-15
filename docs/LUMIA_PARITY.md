@@ -163,7 +163,8 @@ offers to turn it on; accepting turns on both capture and playback).
   is within **60 s** of the photo's.
 - In the library viewer the photo is shown first; when it becomes the current
   item the related clip plays **once, muted, in place over the still** and the
-  view settles back on the still. The viewer is told whether flash fired for
+  view settles back on the still (the clip is handed to the native viewer as a
+  non-looping related video; the exact transition lives in native code). The viewer is told whether flash fired for
   the still (the clip, shot from the viewfinder, will not contain the flash).
   No play button is shown for living images.
 - *Nordlys choice:* the clip starts when the pager settles on the photo, fades
@@ -205,8 +206,10 @@ page shows the clip's thumbnail dimmed to 70 % behind a large light title, a
 short explanation and an install button). *Nordlys choice:* a built-in basic
 trimmer opened from the viewer's "Edit later" on a clip — film strip with two
 handles, preview of the selection, and "save copy", which writes a new clip
-without re-encoding (the start snaps to the nearest earlier key frame). The
-original is never changed.
+without re-encoding (the start snaps to the nearest earlier key frame); the
+selection is at least 1 s and the strip is kept clear of the system back
+gesture so the handles can be grabbed at the screen edges. The original is
+never changed.
 
 ---
 
