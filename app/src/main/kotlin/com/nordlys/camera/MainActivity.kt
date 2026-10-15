@@ -2,6 +2,7 @@ package com.nordlys.camera
 
 import android.Manifest
 import android.content.pm.PackageManager
+import java.io.File
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
@@ -46,14 +47,39 @@ class MainActivity : ComponentActivity() {
         if (wanted.isNotEmpty()) permissionLauncher.launch(wanted.toTypedArray())
         setContent {
             NordlysTheme {
-                var destination by rememberSaveable { mutableStateOf<Destination>(Destination.Camera) }
-                when (destination) {
-                    Destination.Camera -> ViewfinderScreen(
-                        hasPermission = cameraGranted,
-                        audioGranted = audioGranted,
-                        onOpenGallery = { destination = Destination.Library },
+                // self-reported fault surface (no ADB required)
+                var crashReport by rememberSaveable { mutableStateOf<String?>(null) }
+                androidx.compose.runtime.LaunchedEffect(Unit) {
+                    val f = File(filesDir, "crash.log")
+                    if (f.exists() && !File(filesDir, "crash.seen").exists()) {
+                        runCatching { crashReport = f.readText() }
+                    }
+                }
+                if (crashReport != null) {
+                    CrashReportSheet(
+                        report = crashReport!!,
+                        onClear = {
+                            runCatching {
+                                File(filesDir, "crash.log").delete()
+                                File(filesDir, "crash.seen").writeText("seen")
+                            }
+                            crashReport = null
+                        },
+                        onClose = {
+                            runCatching { File(filesDir, "crash.seen").writeText("seen") }
+                            crashReport = null
+                        },
                     )
-                    Destination.Library -> GalleryScreen(onClose = { destination = Destination.Camera })
+                } else {
+                    var destination by rememberSaveable { mutableStateOf<Destination>(Destination.Camera) }
+                    when (destination) {
+                        Destination.Camera -> ViewfinderScreen(
+                            hasPermission = cameraGranted,
+                            audioGranted = audioGranted,
+                            onOpenGallery = { destination = Destination.Library },
+                        )
+                        Destination.Library -> GalleryScreen(onClose = { destination = Destination.Camera })
+                    }
                 }
             }
         }
