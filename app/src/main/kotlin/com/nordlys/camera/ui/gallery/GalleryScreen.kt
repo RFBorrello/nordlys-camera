@@ -215,7 +215,7 @@ private fun ViewerScreen(
                         controllers[item.id] = controller
                         onDispose { controllers.remove(item.id) }
                     }
-                    VideoPlayback(item, controller, active = pagerState.currentPage == page)
+                    VideoPlayback(item, controller, active = pagerState.currentPage == page, chromeVisible = chrome, onInteract = { touchedAt = System.currentTimeMillis() })
                 }
                 else if (clip != null) {
                     LivingPlayback(clip = clip, reader = reader, active = pagerState.currentPage == page)

@@ -127,6 +127,8 @@ Bracketing: 3 or 5 frames at ±0.3/0.7/1.0/2.0/3.0 EV via the menu.
 - Transport (part of the chrome): 74 px ringed play/pause disc, then a 4 px
   timeline (white @ 40 % track, accent fill, 18 px white knob), then
   "elapsed / total". Scrubbing pauses playback and resumes it on release.
+  *Nordlys choice:* play/pause lives only in the centred disc (shown while
+  paused, and with the chrome while playing); the bottom keeps the timeline.
 - While a clip plays, the chrome hides itself after 5 s without a touch.
 
 ---

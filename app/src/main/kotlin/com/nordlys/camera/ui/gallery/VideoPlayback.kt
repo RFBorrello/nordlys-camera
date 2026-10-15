@@ -67,12 +67,12 @@ class VideoController(val player: MediaPlayer) {
 }
 
 /**
- * A clip in the viewer: its frame at the true aspect (rotation applied) and,
- * until playback starts, a large centred play button. Transport controls live
- * in the viewer chrome ([VideoControls]) so a tap can hide them with the rest.
+ * A clip in the viewer: its frame at the true aspect (rotation applied) with a
+ * large centred play/pause button. The timeline lives in the viewer chrome
+ * ([VideoControls]) so a tap hides it with the rest.
  */
 @Composable
-fun VideoPlayback(item: GalleryItem, controller: VideoController, active: Boolean) {
+fun VideoPlayback(item: GalleryItem, controller: VideoController, active: Boolean, chromeVisible: Boolean, onInteract: () -> Unit) {
     val context = androidx.compose.ui.platform.LocalContext.current
     val aspect = remember(item.id) { displayAspect(context, item) }
     val player = controller.player
@@ -123,15 +123,20 @@ fun VideoPlayback(item: GalleryItem, controller: VideoController, active: Boolea
                 }
             },
         )
-        if (!controller.started) {
+        // play/pause sits centred on the frame: always while paused, with the chrome while playing
+        androidx.compose.animation.AnimatedVisibility(
+            visible = !controller.playing || chromeVisible,
+            enter = androidx.compose.animation.fadeIn(androidx.compose.animation.core.tween(300)),
+            exit = androidx.compose.animation.fadeOut(androidx.compose.animation.core.tween(300)),
+        ) {
             Canvas(
                 Modifier
                     .size(100.dp)
-                    .clickable(remember { MutableInteractionSource() }, indication = null) { controller.play() },
+                    .clickable(remember { MutableInteractionSource() }, indication = null) { controller.toggle(); onInteract() },
             ) {
                 drawCircle(Color.Black.copy(alpha = 0.3f), size.minDimension / 2f)
                 drawCircle(Color.White, size.minDimension / 2f - 2.dp.toPx(), style = Stroke(3.5f.dp.toPx()))
-                drawPlayGlyph(center, size.minDimension * 0.34f, playing = false)
+                drawPlayGlyph(center, size.minDimension * 0.34f, playing = controller.playing)
             }
         }
     }
@@ -142,21 +147,12 @@ fun VideoPlayback(item: GalleryItem, controller: VideoController, active: Boolea
 }
 
 /**
- * Transport for the current clip: ringed play/pause disc, a thin scrub line
- * with an accent fill and white knob, and "elapsed / total".
+ * Timeline for the current clip: a thin scrub line with an accent fill and
+ * white knob, and "elapsed / total".
  */
 @Composable
 fun VideoControls(controller: VideoController, onInteract: () -> Unit, modifier: Modifier = Modifier) {
     Column(modifier.fillMaxWidth().padding(horizontal = 20.dp), horizontalAlignment = Alignment.CenterHorizontally) {
-        Canvas(
-            Modifier
-                .size(74.dp)
-                .clickable(remember { MutableInteractionSource() }, indication = null) { controller.toggle(); onInteract() },
-        ) {
-            drawCircle(Color.Black.copy(alpha = 0.25f), size.minDimension / 2f)
-            drawCircle(Color.White, size.minDimension / 2f - 1.75f.dp.toPx(), style = Stroke(3.5f.dp.toPx()))
-            drawPlayGlyph(center, size.minDimension * 0.32f, playing = controller.playing)
-        }
         val fraction = if (controller.durationMs > 0) controller.positionMs / controller.durationMs.toFloat() else 0f
         Canvas(
             Modifier
