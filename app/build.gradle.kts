@@ -12,8 +12,8 @@ android {
         applicationId = "com.nordlys.camera"
         minSdk = 26
         targetSdk = 35
-        versionCode = 2
-        versionName = "0.2.0-beta1"
+        versionCode = 3
+        versionName = "0.2.0-beta2"
     }
 
     buildTypes {
@@ -46,4 +46,5 @@ dependencies {
     implementation(libs.kotlinx.coroutines.android)
     implementation(libs.androidx.lifecycle.compose)
     implementation(libs.coil.compose)
+    implementation(libs.coil.video)
 }

@@ -32,6 +32,7 @@ import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.drawscope.rotate
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
@@ -106,6 +107,7 @@ fun ViewfinderScreen(hasPermission: Boolean, audioGranted: Boolean = false, onOp
     var shot by remember { mutableIntStateOf(0) }
     var confirm by remember { mutableStateOf<Bitmap?>(null) }
     var confirmKey by remember { mutableIntStateOf(0) }
+    var confirmOrientation by remember { mutableIntStateOf(0) }
     var progress by remember { mutableStateOf<Float?>(null) }
     var countdown by remember { mutableIntStateOf(0) }
     var recording by remember { mutableStateOf(false) }
@@ -222,8 +224,8 @@ fun ViewfinderScreen(hasPermission: Boolean, audioGranted: Boolean = false, onOp
     }
 
     // ---- capture -----------------------------------------------------------------
-    fun afterSave(saved: CameraEngine.Saved?) {
-        saved?.preview?.let { confirm = it; confirmKey++ }
+    fun afterSave(saved: CameraEngine.Saved?, shotOrientation: Int = orientation) {
+        saved?.preview?.let { confirm = it; confirmOrientation = shotOrientation; confirmKey++ }
     }
 
     fun shoot() {
@@ -416,7 +418,23 @@ fun ViewfinderScreen(hasPermission: Boolean, audioGranted: Boolean = false, onOp
         )
 
         ShutterIris(shot, Modifier.offset { IntOffset(0, previewTop.roundToInt()) }.size(px(screen.width.toFloat()), px(previewH)))
-        CaptureConfirmation(confirm, confirmKey)
+        // the confirmation is shown the way the photo was framed, not in the fixed viewfinder frame
+        UprightOverlay(confirmOrientation) { CaptureConfirmation(confirm, confirmKey) }
+
+        // time code sits on the edge opposite the shutter, clear of the strip in every pose
+        if (recording) {
+            Text(
+                "● %02d:%02d".format(recordSec / 60, recordSec % 60),
+                style = TextStyle(fontFamily = Selawik, fontSize = with(density) { (26f * s).toSp() }),
+                color = Color.White,
+                modifier = Modifier
+                    .align(Alignment.TopCenter)
+                    .padding(top = px(46f * s))
+                    .graphicsLayer { rotationZ = glyphRotation }
+                    .background(Color.Black.copy(alpha = 0.4f))
+                    .padding(horizontal = 10.dp, vertical = 2.dp),
+            )
+        }
 
         UprightOverlay(orientation) {
             Box(Modifier.fillMaxSize()) {
@@ -427,14 +445,6 @@ fun ViewfinderScreen(hasPermission: Boolean, audioGranted: Boolean = false, onOp
                         style = TextStyle(fontFamily = Selawik, fontWeight = FontWeight.Light, fontSize = with(density) { (140f * s).toSp() }),
                         color = Color.White,
                         modifier = Modifier.align(Alignment.Center),
-                    )
-                }
-                if (recording) {
-                    Text(
-                        "● %02d:%02d".format(recordSec / 60, recordSec % 60),
-                        style = TextStyle(fontFamily = Selawik, fontSize = with(density) { (26f * s).toSp() }),
-                        color = Color.White,
-                        modifier = Modifier.align(Alignment.TopCenter).padding(top = 28.dp).background(Color.Black.copy(alpha = 0.4f)).padding(horizontal = 10.dp, vertical = 2.dp),
                     )
                 }
             }

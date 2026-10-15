@@ -16,6 +16,12 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.systemBarsPadding
+import androidx.compose.foundation.layout.safeDrawingPadding
+import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.WindowInsetsSides
+import androidx.compose.foundation.layout.only
+import androidx.compose.foundation.layout.safeDrawing
+import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items as gridItems
@@ -90,7 +96,7 @@ fun GalleryScreen(onClose: () -> Unit) {
     }
 
     Box(Modifier.fillMaxSize().background(Color(0xFF101010))) {
-        Column(Modifier.fillMaxSize().systemBarsPadding()) {
+        Column(Modifier.fillMaxSize().safeDrawingPadding()) {
             MetroPivot(
                 items = listOf("Gallery", "Videos"),
                 selected = pivot,
@@ -110,7 +116,7 @@ fun GalleryScreen(onClose: () -> Unit) {
                 }
             } else {
                 LazyVerticalGrid(
-                    columns = GridCells.Fixed(3),
+                    columns = GridCells.Adaptive(120.dp),
                     modifier = Modifier.weight(1f).fillMaxWidth(),
                     horizontalArrangement = Arrangement.spacedBy(1.dp),
                     verticalArrangement = Arrangement.spacedBy(1.dp),
@@ -156,31 +162,36 @@ private fun ViewerScreen(
     val scope = rememberCoroutineScope()
     var infoOpen by remember { mutableStateOf(false) }
     var confirmDelete by remember { mutableStateOf(false) }
-    val pagerState = rememberPagerState(pageCount = { items.size })
+    val pagerState = rememberPagerState(initialPage = startIndex, pageCount = { items.size })
+    var zoomed by remember { mutableStateOf(false) }
+    androidx.activity.compose.BackHandler(enabled = !infoOpen && !confirmDelete, onBack = onClose)
 
     Box(Modifier.fillMaxSize().background(Color.Black)) {
-        HorizontalPager(state = pagerState, modifier = Modifier.fillMaxSize()) { page ->
+        HorizontalPager(state = pagerState, userScrollEnabled = !zoomed, modifier = Modifier.fillMaxSize()) { page ->
             val item = items.getOrNull(page) ?: return@HorizontalPager
             val clip = remember(item.id) { if (item.isVideo) null else reader.clipFor(item.uri) }
-            Box(Modifier.fillMaxSize().systemBarsPadding(), contentAlignment = Alignment.Center) {
+            Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                 if (item.isVideo) VideoPlayback(item)
                 else if (clip != null) {
                     LivingPlayback(clip = clip, reader = reader, active = pagerState.currentPage == page)
                 }
-                else AsyncImage(
-                    model = item.uri,
-                    contentDescription = item.displayName,
-                    contentScale = ContentScale.Fit,
-                    modifier = Modifier.fillMaxSize(),
-                )
+                else ZoomableImage(item.uri, item.displayName, onZoomedChange = { zoomed = it })
             }
         }
 
-        Column(Modifier.fillMaxSize().systemBarsPadding()) {
-            Row(Modifier.fillMaxWidth().padding(horizontal = 20.dp)) {
+        Column(Modifier.fillMaxSize()) {
+            Row(
+                Modifier
+                    .fillMaxWidth()
+                    .background(Color.Black.copy(alpha = 0.45f))
+                    .windowInsetsPadding(WindowInsets.safeDrawing.only(WindowInsetsSides.Top + WindowInsetsSides.Horizontal))
+                    .padding(horizontal = 20.dp, vertical = 6.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
                 Text(
                     text = "Library",
                     style = MaterialTheme.typography.headlineMedium,
+                    color = MetroForeground,
                     modifier = Modifier
                         .clickable(interactionSource = remember { MutableInteractionSource() }, indication = null, onClick = onClose),
                 )
@@ -193,7 +204,11 @@ private fun ViewerScreen(
             }
             Spacer(Modifier.weight(1f))
             Row(
-                Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 20.dp),
+                Modifier
+                    .fillMaxWidth()
+                    .background(Color.Black.copy(alpha = 0.45f))
+                    .windowInsetsPadding(WindowInsets.safeDrawing.only(WindowInsetsSides.Bottom + WindowInsetsSides.Horizontal))
+                    .padding(horizontal = 20.dp, vertical = 8.dp),
                 horizontalArrangement = Arrangement.SpaceBetween,
             ) {
                 ViewerAction("Share") {
