@@ -99,8 +99,8 @@ names the parameter.
 
 | Mode | Behavior |
 |---|---|
-| Photo | Tap = capture (AF if not converged). Optional Living Image: ~1 s of motion buffered around the press and attached to the still. Dual capture: oversampled ~5 MP JPEG **plus** full-resolution JPEG, or plus DNG |
-| Video | Shutter starts/stops; time code; torch light; 1080p/720p at 30/25/24 fps |
+| Photo | Tap = capture (AF if not converged). Optional Living Image (§8): a short H.264 clip from a rolling buffer that ends just after the press, stored beside the still. Dual capture: oversampled ~5 MP JPEG **plus** full-resolution JPEG, or plus DNG |
+| Video | Shutter starts/stops; large time readout; torch light; 1080p/720p at 30/25/24 fps (§9) |
 | Smart | One press captures a **sequence of 7–10 frames over ~2.5 s** (≈250–350 ms apart) with AE/AF locked, then opens an editor: **best shot**, **action shot** (stroboscopic overlay of a moving subject), **motion focus** (subject sharp, background streaked), **remove moving objects**, **change faces** |
 
 Self-timer: 2 s / 5 s / 10 s through the menu, shown as the shutter progress arc.
@@ -131,6 +131,86 @@ Bracketing: 3 or 5 frames at ±0.3/0.7/1.0/2.0/3.0 EV via the menu.
   paused, and with the chrome while playing); the bottom keeps the timeline.
 - While a clip plays, the chrome hides itself after 5 s without a touch.
 
+## 8. Living Images
+
+**Capture.** A back-camera-only photo option, off by default (a first-run page
+offers to turn it on; accepting turns on both capture and playback).
+
+- While the photo viewfinder is open and the option is on, the preview stream is
+  encoded **continuously into a rolling buffer** (a native recorder fed by the
+  viewfinder source). Nothing is written until a photo is taken.
+- When the still capture *starts* (after any focus settle), recording is told to
+  stop **150 ms later**; the buffered stretch therefore ends 150 ms after the
+  exposure begins and holds the moment *before* the press. The orientation for
+  the clip is sampled from the accelerometer at that same moment.
+- When the frame is buffered the recording is *validated* (too little footage →
+  no clip, the still is saved alone). The saving caption switches to a "saving
+  living image" variant while it writes.
+- The clip is saved as an MP4 beside the JPEG with the same base name and a
+  hidden-to-the-gallery extension, plus a small thumbnail sidecar. Recording
+  restarts right after the save.
+- Recording is paused (and its buffer cleared) during bracketing and during a
+  held-shutter sequence, and resumes when they end.
+- The buffer length and bit-rate live in native code and are not visible to
+  static analysis. *Nordlys choice:* **≈1.5 s before the capture start + 0.15 s
+  after**, H.264 at the analysis-stream size (≤ 1440 × 1080, same aspect as the
+  photo), 30 fps, key frame every 0.5 s.
+
+**Playback.** A separate setting ("play living images", off by default) gates it.
+
+- A photo counts as living only if its clip exists, the photo was not reframed or
+  edited by another app, and (when edit status is unknown) the clip's file time
+  is within **60 s** of the photo's.
+- In the library viewer the photo is shown first; when it becomes the current
+  item the related clip plays **once, muted, in place over the still** and the
+  view settles back on the still (the clip is handed to the native viewer as a
+  non-looping related video; the exact transition lives in native code). The viewer is told whether flash fired for
+  the still (the clip, shot from the viewfinder, will not contain the flash).
+  No play button is shown for living images.
+- *Nordlys choice:* the clip starts when the pager settles on the photo, fades
+  out over 0.3 s into the still at its end (a quicker 0.15 s cut when flash
+  fired), and stops at once if the user swipes away or starts zooming. Swiping
+  back plays it again.
+
+## 9. Video
+
+**Resolution / frame rate** (settings → videos, back camera only; the front
+camera always records at its best size):
+
+| Device class | Choices, in order | Default |
+|---|---|---|
+| 1080p capable | 1080p 30 · 1080p 25 · 1080p 24 · 720p 30 · 720p 25 · 720p 24 | 1080p 30 |
+| 720p only | 720p 30 · 720p 25 · 720p 24 | 720p 30 |
+
+The chosen rate is applied as a fixed sensor frame rate; continuous AF stays on.
+*Nordlys:* a choice is offered only when the encoder and the camera can produce
+that size and a fixed frame-rate range for it.
+
+**Timer readout.**
+
+- Large light white digits (60 pt in the 480 × 800 frame), `mm:ss`, switching to
+  `h:mm:ss` after an hour; never hit-testable.
+- Shown as `00:00` whenever the video viewfinder controls are visible, not only
+  while recording. Entering video mode fades it in (0.25 s) after a ≈1 s delay;
+  starting a recording shows it at once.
+- Counts one second per tick while recording; stopping resets it to `00:00`.
+- Hidden (0.25 s fade) while the pro dials are open or an info caption is
+  showing; returns when they close.
+- Placement: upright portrait → horizontally centred, 163 px above the bottom
+  edge (just above the shutter); landscape → left-aligned, 18 px from the left
+  and 38 px above the bottom.
+
+**Trimming.** The library's edit action on a clip hands it to the platform's
+video editor (or, on older systems, a separate trimmer app; without it a stub
+page shows the clip's thumbnail dimmed to 70 % behind a large light title, a
+short explanation and an install button). *Nordlys choice:* a built-in basic
+trimmer opened from the viewer's "Edit later" on a clip — film strip with two
+handles, preview of the selection, and "save copy", which writes a new clip
+without re-encoding (the start snaps to the nearest earlier key frame); the
+selection is at least 1 s and the strip is kept clear of the system back
+gesture so the handles can be grabbed at the screen edges. The original is
+never changed.
+
 ---
 
 ## Gap analysis (Nordlys v0.1.0 → this pass)
@@ -151,5 +231,5 @@ Bracketing: 3 or 5 frames at ±0.3/0.7/1.0/2.0/3.0 EV via the menu.
 | Oversampling | — | Core of the image character | Oversampled default + optional full-res |
 | Smart mode | 7-frame temporal median → one JPEG | Different feature | Timed sequence + editor (best shot, remove objects, action shot, motion focus) |
 | Change faces | — | Needs face pipeline | **Deferred** |
-| Living Images | First pass | Keep | Kept; toggle moves to menu |
-| Video | Works | Indicator/torch UI | Wheel + torch cell |
+| Living Images | First pass (≈12 JPEG frames cycled) | Not a clip; no playback gate | §8: rolling H.264 buffer → MP4 sidecar; plays once when swiped to; playback setting |
+| Video | Works | Indicator/torch UI; no quality setting, small timer, no trim | Wheel + torch cell; §9 resolution/fps, timer readout, built-in trimmer |

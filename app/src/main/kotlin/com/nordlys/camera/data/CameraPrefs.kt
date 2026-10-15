@@ -9,6 +9,7 @@ import com.nordlys.camera.model.FocusSetting
 import com.nordlys.camera.model.GridType
 import com.nordlys.camera.model.ManualState
 import com.nordlys.camera.model.SceneSetting
+import com.nordlys.camera.model.VideoQuality
 import com.nordlys.camera.model.WbSetting
 
 /** Viewfinder preferences that survive restarts, like the reference's per-mode settings. */
@@ -18,6 +19,8 @@ data class CameraPrefs(
     val dual: DualCapture = DualCapture.OFF,
     val living: Boolean = false,
     val location: Boolean = false,
+    val playLiving: Boolean = false,
+    val videoQuality: VideoQuality = VideoQuality.FHD_30,
     val advanced: Boolean = false,
     val timerSec: Int = 0,
     val bracketCount: Int = 1,
@@ -42,6 +45,8 @@ class CameraPrefsStore(context: Context) {
             dual = enumOr(sp.getString("dual", null), DualCapture.OFF),
             living = sp.getBoolean("living", false),
             location = sp.getBoolean("location", false),
+            playLiving = sp.getBoolean("playLiving", false),
+            videoQuality = enumOr(sp.getString("videoQuality", null), VideoQuality.FHD_30),
             advanced = sp.getBoolean("advanced", false),
             timerSec = sp.getInt("timer", 0),
             bracketCount = sp.getInt("bracketCount", 1),
@@ -67,6 +72,8 @@ class CameraPrefsStore(context: Context) {
             .putString("dual", p.dual.name)
             .putBoolean("living", p.living)
             .putBoolean("location", p.location)
+            .putBoolean("playLiving", p.playLiving)
+            .putString("videoQuality", p.videoQuality.name)
             .putBoolean("advanced", p.advanced)
             .putInt("timer", p.timerSec)
             .putInt("bracketCount", p.bracketCount)

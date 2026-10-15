@@ -29,6 +29,7 @@ import com.nordlys.camera.data.CameraPrefs
 import com.nordlys.camera.model.AspectSetting
 import com.nordlys.camera.model.DualCapture
 import com.nordlys.camera.model.GridType
+import com.nordlys.camera.model.VideoQuality
 import com.nordlys.camera.ui.theme.MetroAccent
 import com.nordlys.camera.ui.theme.MetroForegroundDim
 
@@ -40,6 +41,7 @@ import com.nordlys.camera.ui.theme.MetroForegroundDim
 fun SettingsSheet(
     prefs: CameraPrefs,
     hasRaw: Boolean,
+    videoQualities: List<VideoQuality>,
     onChange: (CameraPrefs) -> Unit,
     onReset: () -> Unit,
     onClose: () -> Unit,
@@ -75,13 +77,25 @@ fun SettingsSheet(
                 },
             ) { onChange(prefs.copy(dual = it)) }
             Hint("Every photo is averaged down from the full sensor readout for lower noise. Keep the full-size file or the raw sensor data alongside it if you want to edit later.")
-            Picker("Living images", prefs.living, listOf(false to "off", true to "on")) { onChange(prefs.copy(living = it)) }
-            Hint("Keeps a moment of motion around each photo; it plays when you open the photo in the library.")
+            Picker("Living images", prefs.living, listOf(false to "off", true to "on")) {
+                onChange(prefs.copy(living = it, playLiving = prefs.playLiving || (it && !prefs.living)))
+            }
+            Hint("Records the second and a half before each photo with the main camera and keeps it with the picture.")
+            Picker("Play living images in the library", prefs.playLiving, listOf(true to "on", false to "off")) { onChange(prefs.copy(playLiving = it)) }
             Picker("Location info", prefs.location, listOf(false to "off", true to "on")) { onChange(prefs.copy(location = it)) }
             Hint("Saves where each photo was taken in the file, using the phone's location services.")
 
             Spacer(Modifier.height(12.dp))
             Action("reset camera settings", onReset)
+
+            if (videoQualities.isNotEmpty()) {
+                Section("videos")
+                Picker(
+                    "Resolution", videoQualities.firstOrNull { it == prefs.videoQuality } ?: videoQualities.first(),
+                    videoQualities.map { it to it.label },
+                ) { onChange(prefs.copy(videoQuality = it)) }
+                Hint("Applies to the main camera; 25 and 24 frames per second suit PAL television and film-style playback.")
+            }
 
             Section("about")
             Fact("Nordlys", "an independent, cleanroom camera for Android")

@@ -65,14 +65,12 @@ enum class FocusPhase { IDLE, SEARCHING, LOCKED, FAILED }
  * Camera2 engine with a three-stream session:
  *  - preview surface (viewfinder), sized to the capture aspect,
  *  - JPEG still catch (largest size at that aspect),
- *  - YUV analysis catch (smart sequences and living-image motion).
+ *  - YUV analysis catch (smart sequences, and the living-image encoder).
  */
 class CameraEngine(private val context: Context) {
 
     companion object {
         private const val TAG = "NordlysCamera"
-        private const val PRE_ROLL = 6
-        private const val POST_ROLL = 6
         private const val ANALYSIS_MAX_PIXELS = 1920 * 1080
         private const val SETTLE_TAG = "nordlys-settle"
     }
@@ -92,8 +90,8 @@ class CameraEngine(private val context: Context) {
     private var characteristics: CameraCharacteristics? = null
     private var aspect: AspectSetting = AspectSetting.FOUR_THREE
 
-    private val ringBuffer = ArrayDeque<YuvFrame>()
-    private var ringEnabled = false
+    @Volatile private var living: com.nordlys.camera.living.LivingRecorder? = null
+    private var livingEnabled = false
 
     private var recorder: com.nordlys.camera.video.VideoRecorder? = null
     private var recording = false
@@ -198,17 +196,15 @@ class CameraEngine(private val context: Context) {
         yuv?.setOnImageAvailableListener({ r ->
             val img = r.acquireLatestImage() ?: return@setOnImageAvailableListener
             val collector = burstCollector
-            if (collector == null && !ringEnabled) { img.close(); return@setOnImageAvailableListener }
-            val frame = try { YuvFrame.from(img) } catch (e: Throwable) { img.close(); null } ?: return@setOnImageAvailableListener
-            if (collector != null) {
-                collector.trySend(frame)
-            } else {
-                synchronized(ringBuffer) {
-                    ringBuffer.addLast(frame)
-                    while (ringBuffer.size > PRE_ROLL) ringBuffer.removeFirst()
-                }
+            if (collector == null) {
+                living?.let { rec -> runCatching { rec.feed(img) } }
+                img.close()
+                return@setOnImageAvailableListener
             }
+            val frame = try { YuvFrame.from(img) } catch (e: Throwable) { img.close(); null } ?: return@setOnImageAvailableListener
+            collector.trySend(frame)
         }, handler)
+        restartLiving()
 
         val outputs = buildList {
             add(OutputConfiguration(surface))
@@ -269,11 +265,20 @@ class CameraEngine(private val context: Context) {
             .onFailure { Log.w(TAG, "preview apply failed", it) }
     }
 
+    /** Living Images keep a rolling clip of the viewfinder while the photo mode is open (§8). */
     fun setLivingEnabled(on: Boolean) {
-        if (ringEnabled == on) return
-        ringEnabled = on
-        if (!on) synchronized(ringBuffer) { ringBuffer.clear() }
+        if (livingEnabled == on) return
+        livingEnabled = on
+        restartLiving()
         apply(lastState)
+    }
+
+    private fun restartLiving() {
+        living?.release(); living = null
+        val yuv = yuvReader ?: return
+        if (!livingEnabled || device == null) return
+        val rec = com.nordlys.camera.living.LivingRecorder(yuv.width, yuv.height)
+        if (rec.start()) living = rec
     }
 
     private fun buildPreviewRequest(state: ManualState, template: Int = CameraDevice.TEMPLATE_PREVIEW): CaptureRequest? {
@@ -281,7 +286,7 @@ class CameraEngine(private val context: Context) {
         val surface = previewSurface ?: return null
         return d.createCaptureRequest(template).apply {
             addTarget(surface)
-            yuvReader?.let { if (ringEnabled || burstCollector != null) addTarget(it.surface) }
+            yuvReader?.let { if (living != null || burstCollector != null) addTarget(it.surface) }
             decorate(this, state, still = false)
         }.build()
     }
@@ -372,7 +377,8 @@ class CameraEngine(private val context: Context) {
     }
 
     // ---- still capture ---------------------------------------------------------
-    data class StillsOut(val jpeg: ByteArray, val dng: ByteArray?)
+    /** [startedNs]: sensor timestamp of the exposure; [flashFired]: the flash lit this frame. */
+    data class StillsOut(val jpeg: ByteArray, val dng: ByteArray?, val startedNs: Long = 0L, val flashFired: Boolean = false)
 
     /** Settles AF (and AE for flash) before a still, like a half-press. */
     private suspend fun settleBeforeStill(state: ManualState) {
@@ -471,6 +477,7 @@ class CameraEngine(private val context: Context) {
                 }.build()
 
                 val resultGate = CompletableDeferred<TotalCaptureResult>()
+                var startedNs = 0L
                 val jpegImage = suspendCancellableCoroutine<android.media.Image> { cont ->
                     reader.setOnImageAvailableListener({ r ->
                         val img = r.acquireLatestImage()
@@ -478,6 +485,9 @@ class CameraEngine(private val context: Context) {
                     }, handler)
                     runCatching {
                         s.capture(request, object : CameraCaptureSession.CaptureCallback() {
+                            override fun onCaptureStarted(cs: CameraCaptureSession, r: CaptureRequest, timestamp: Long, frameNumber: Long) {
+                                startedNs = timestamp
+                            }
                             override fun onCaptureCompleted(cs: CameraCaptureSession, r: CaptureRequest, result: TotalCaptureResult) {
                                 Log.i(TAG, "still: flash=${result.get(CaptureResult.FLASH_STATE)} ae=${result.get(CaptureResult.CONTROL_AE_STATE)} " +
                                     "aeMode=${result.get(CaptureResult.CONTROL_AE_MODE)} iso=${result.get(CaptureResult.SENSOR_SENSITIVITY)} " +
@@ -508,7 +518,9 @@ class CameraEngine(private val context: Context) {
                         }
                     }.onFailure { Log.w(TAG, "dng build failed", it) }.getOrNull()
                 }
-                StillsOut(jpeg = jpegBytes, dng = dngBytes)
+                val fired = withTimeoutOrNull(500) { resultGate.await() }
+                    ?.get(CaptureResult.FLASH_STATE) == CaptureResult.FLASH_STATE_FIRED
+                StillsOut(jpeg = jpegBytes, dng = dngBytes, startedNs = startedNs, flashFired = fired)
             } finally {
                 if (swapped) {
                     runCatching { rawReader?.close() }
@@ -551,21 +563,23 @@ class CameraEngine(private val context: Context) {
         }
 
     // ---- living images ---------------------------------------------------------
-    suspend fun captureLivingStill(state: ManualState = lastState): com.nordlys.camera.living.LivingPayload? {
-        if (!ringEnabled) setLivingEnabled(true)
-        val pre = synchronized(ringBuffer) { ringBuffer.toList().also { ringBuffer.clear() } }
-        val still = captureStill(state)?.jpeg
-
-        val channel = Channel<YuvFrame>(POST_ROLL)
-        burstCollector = channel
-        apply(lastState)
-        val post = withTimeoutOrNull(2000) { List(POST_ROLL) { channel.receive() } } ?: emptyList()
-        burstCollector = null
-        apply(lastState)
-
-        if (still == null) return null
-        return com.nordlys.camera.living.LivingPayload(stillJpeg = still, frames = (pre + post).sortedBy { it.tsMs })
+    /**
+     * A still plus its living clip: the rolling buffer is cut so the clip ends
+     * 150 ms after the exposure began (§8). [clipOut] is left empty (and false is
+     * returned alongside the still) when there was too little footage.
+     */
+    suspend fun captureLivingStill(state: ManualState, clipOut: java.io.File): Pair<StillsOut, Boolean>? {
+        val rec = living
+        val rotation = captureOrientation()
+        val still = captureStill(state) ?: return null
+        if (rec == null) return still to false
+        val atUs = if (still.startedNs > 0) still.startedNs / 1000 else rec.latestUs
+        val ok = withContext(Dispatchers.IO) { rec.cut(atUs, clipOut, rotation) }
+        return still to ok
     }
+
+    /** Pauses the living buffer for sequences that are not one moment (bracketing). */
+    fun clearLivingBuffer() { living?.clear() }
 
     // ---- smart sequence ----------------------------------------------------------
     /**
@@ -620,13 +634,43 @@ class CameraEngine(private val context: Context) {
     }
 
     // ---- clip recording --------------------------------------------------------
-    suspend fun beginVideoRecording(audio: Boolean): Boolean = withContext(Dispatchers.Main) {
+    /**
+     * Sizes and rates this lens can record (§9): the camera must stream the size to
+     * an encoder, hold that rate as a fixed range, and the encoder must take both.
+     */
+    fun videoQualities(): List<com.nordlys.camera.model.VideoQuality> {
+        val c = characteristics ?: return emptyList()
+        val sizes = c.get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP)
+            ?.getOutputSizes(android.media.MediaRecorder::class.java)?.toSet() ?: return emptyList()
+        val avc = runCatching {
+            android.media.MediaCodecList(android.media.MediaCodecList.REGULAR_CODECS).codecInfos
+                .filter { it.isEncoder && it.supportedTypes.any { t -> t.equals("video/avc", true) } }
+                .map { it.getCapabilitiesForType("video/avc").videoCapabilities }
+        }.getOrDefault(emptyList())
+        return com.nordlys.camera.model.VideoQuality.entries.filter { q ->
+            Size(q.width, q.height) in sizes &&
+                fpsRangeFor(q.fps) != null &&
+                (avc.isEmpty() || avc.any { runCatching { it.areSizeAndRateSupported(q.width, q.height, q.fps.toDouble()) }.getOrDefault(false) })
+        }
+    }
+
+    /** A fixed [fps] range if the lens has one, else the narrowest range topping out at it. */
+    private fun fpsRangeFor(fps: Int): Range<Int>? =
+        traits.fpsRanges.firstOrNull { it.lower == fps && it.upper == fps }
+            ?: traits.fpsRanges.filter { it.upper == fps }.maxByOrNull { it.lower }
+
+    private var recordFps: Range<Int>? = null
+
+    suspend fun beginVideoRecording(audio: Boolean, wanted: com.nordlys.camera.model.VideoQuality): Boolean = withContext(Dispatchers.Main) {
         val d = device ?: return@withContext false
         val surface = previewSurface ?: return@withContext false
         if (recording) return@withContext true
 
+        val offered = videoQualities()
+        val quality = wanted.takeIf { it in offered } ?: offered.firstOrNull() ?: wanted
+        recordFps = fpsRangeFor(quality.fps)
         val rec = com.nordlys.camera.video.VideoRecorder(context)
-        val encoderSurface = rec.prepare(audio, lensId, captureOrientation())
+        val encoderSurface = rec.prepare(audio, lensId, quality, captureOrientation())
         recorder = rec
         try {
             session?.close(); session = null
@@ -636,6 +680,8 @@ class CameraEngine(private val context: Context) {
                 addTarget(surface)
                 addTarget(encoderSurface)
                 applyManualState(this, lastState, traits, meteredProduct, still = false)
+                recordFps?.let { set(CaptureRequest.CONTROL_AE_TARGET_FPS_RANGE, it) }
+                if (lastState.focus == FocusSetting.Auto && ranges.canFocus) set(CaptureRequest.CONTROL_AF_MODE, CameraMetadata.CONTROL_AF_MODE_CONTINUOUS_VIDEO)
             }.build()
             s.setRepeatingRequest(request, meterCallback, handler)
             val started = rec.start()
@@ -675,6 +721,8 @@ class CameraEngine(private val context: Context) {
             val request = d.createCaptureRequest(CameraDevice.TEMPLATE_RECORD).apply {
                 addTarget(p); addTarget(enc)
                 applyManualState(this, state, traits, meteredProduct, still = false)
+                recordFps?.let { set(CaptureRequest.CONTROL_AE_TARGET_FPS_RANGE, it) }
+                if (state.focus == FocusSetting.Auto && ranges.canFocus) set(CaptureRequest.CONTROL_AF_MODE, CameraMetadata.CONTROL_AF_MODE_CONTINUOUS_VIDEO)
             }.build()
             s.setRepeatingRequest(request, meterCallback, handler)
         }
@@ -778,6 +826,7 @@ class CameraEngine(private val context: Context) {
     }
 
     fun close() {
+        living?.release(); living = null
         runCatching { session?.close() }
         runCatching { device?.close() }
         session = null; device = null
