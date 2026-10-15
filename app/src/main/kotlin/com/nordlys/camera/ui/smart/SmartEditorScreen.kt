@@ -44,6 +44,7 @@ import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
@@ -106,9 +107,12 @@ fun SmartEditorScreen(
     LaunchedEffect(frames) {
         withContext(Dispatchers.Default) {
             thumbs = frames.mapNotNull { it.toPreviewBitmap(rotation, 240) }
+            val t0 = android.os.SystemClock.elapsedRealtime()
             val st = SmartCompositor.stabilise(frames, ref)
+            val t1 = android.os.SystemClock.elapsedRealtime()
             stabilised = st
             background = SmartCompositor.removeMoving(st)
+            android.util.Log.i("NordlysSmart", "stabilise ${t1 - t0} ms, median ${android.os.SystemClock.elapsedRealtime() - t1} ms (${frames.size} × ${frames[0].width}×${frames[0].height})")
         }
     }
 
@@ -119,7 +123,10 @@ fun SmartEditorScreen(
         withContext(Dispatchers.Default) {
             val up = st.map { it.toPreviewBitmap(rotation, FACE_SIDE) ?: return@withContext }
             uprights = up
-            faces = FaceFinder.across(up)
+            val t0 = android.os.SystemClock.elapsedRealtime()
+            faces = FaceFinder.across(up).also {
+                android.util.Log.i("NordlysSmart", "faces: ${it.size} in ${android.os.SystemClock.elapsedRealtime() - t0} ms")
+            }
         }
     }
 
@@ -127,6 +134,7 @@ fun SmartEditorScreen(
         val st = stabilised ?: return@LaunchedEffect
         busy = true
         saved = false
+        val started = android.os.SystemClock.elapsedRealtime()
         val out = withContext(Dispatchers.Default) {
             when (tool) {
                 SmartTool.BEST -> frames[bestIndex]
@@ -148,6 +156,7 @@ fun SmartEditorScreen(
                 }
             }
         }
+        android.util.Log.i("NordlysSmart", "$tool ${android.os.SystemClock.elapsedRealtime() - started} ms")
         result = out
         preview = withContext(Dispatchers.Default) { out.toPreviewBitmap(rotation, 1600) }
         busy = false
@@ -184,6 +193,7 @@ fun SmartEditorScreen(
                     .weight(1f)
                     .fillMaxWidth()
                     .padding(vertical = 10.dp)
+                    .testTag("smart-preview")
                     .onSizeChanged { boxSize = it }
                     .pointerInput(tool, preview) {
                         detectTapGestures { p ->
@@ -245,6 +255,7 @@ fun SmartEditorScreen(
                             chip.asImageBitmap(), null, contentScale = ContentScale.Crop,
                             modifier = Modifier
                                 .size(64.dp)
+                                .testTag("face-chip-$i")
                                 .border(if (on) 3.dp else 0.dp, if (on) MetroAccent else Color.Transparent)
                                 .clickable { faceChoice[k] = i },
                         )

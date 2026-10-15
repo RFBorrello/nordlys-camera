@@ -24,7 +24,7 @@ import kotlin.math.sqrt
 object Oversampler {
 
     /** Unsharp-mask strength applied after the resample (0 = off). */
-    const val SHARPEN = 0f
+    const val SHARPEN = 0.4f
     /** Differences smaller than this (8-bit levels) are left alone so flat noise is not amplified. */
     private const val SHARPEN_THRESHOLD = 3
 
@@ -41,7 +41,7 @@ object Oversampler {
      * @param exif metadata copied onto the output (exposure, ISO, timestamps).
      * @param scratch a writable directory for the EXIF round trip.
      */
-    fun oversample(sourceJpeg: ByteArray, scratch: File, quality: Int = 94, sharpen: Float = SHARPEN): Result? {
+    fun oversample(sourceJpeg: ByteArray, scratch: File, quality: Int = 96, sharpen: Float = SHARPEN): Result? {
         val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
         BitmapFactory.decodeByteArray(sourceJpeg, 0, sourceJpeg.size, bounds)
         val srcW = bounds.outWidth

@@ -604,14 +604,14 @@ class CameraEngine(private val context: Context) {
 
     /**
      * Tuning aid: when `files/dump-sequences` exists in the app's external files
-     * directory (create it over adb), the last sequence is written there as raw
+     * directory (create it over adb), each sequence is written under `sequences/` as raw
      * I420 planes so composites can be tuned off-device.
      */
     private fun dumpSequence(frames: List<YuvFrame>) {
         val root = context.getExternalFilesDir(null) ?: return
         if (!File(root, "dump-sequences").exists()) return
         runCatching {
-            val dir = File(root, "last-sequence").apply { deleteRecursively(); mkdirs() }
+            val dir = File(root, "sequences/${System.currentTimeMillis()}").apply { mkdirs() }
             File(dir, "meta.txt").writeText("rotation=${captureOrientation()}\nframes=${frames.size}\n")
             frames.forEachIndexed { i, f ->
                 File(dir, "f$i-${f.width}x${f.height}.i420").outputStream().use { o -> o.write(f.y); o.write(f.u); o.write(f.v) }

@@ -20,23 +20,29 @@ import kotlin.math.min
 object SmartCompositor {
 
     /** Mean |Δ| (luma + half chroma) below which a cell counts as background. */
-    var maskLow = 14f
+    var maskLow = 20f
     /** Mean |Δ| above which a cell is fully "moved". */
-    var maskHigh = 34f
+    var maskHigh = 44f
     /** Motion-focus subject box, as a fraction of the shorter frame side. */
     var subjectBox = 0.22f
 
-    /** Frames shifted onto [ref]'s framing by their dominant translation. */
+    /**
+     * Frames warped onto [ref]'s framing. Hand-held sequences drift and roll a
+     * little over two seconds, so each frame gets an affine camera-motion model
+     * (shift, rotation, scale) fitted to its block offsets, not just a shift.
+     */
     suspend fun stabilise(frames: List<YuvFrame>, ref: Int): List<YuvFrame> = coroutineScope {
         val reference = frames[ref]
         frames.mapIndexed { i, f ->
             async(Dispatchers.Default) {
-                if (i == ref) f else {
-                    val (dx, dy) = dominantShift(reference, f)
-                    shift(f, dx, dy)
-                }
+                if (i == ref) f else warp(f, cameraMotion(reference, f))
             }
         }.awaitAll()
+    }
+
+    /** Maps a reference pixel (x, y) to (a·x + b·y + c, d·x + e·y + f) in another frame. */
+    class Affine(val a: Float, val b: Float, val c: Float, val d: Float, val e: Float, val f: Float) {
+        override fun toString() = "[%.4f %.4f %.1f | %.4f %.4f %.1f]".format(a, b, c, d, e, f)
     }
 
     /** Median of the stabilised stack: anything that does not stay put long enough disappears. */
@@ -81,9 +87,9 @@ object SmartCompositor {
     /**
      * Motion focus: frames are aligned on the subject at ([cx], [cy]) (normalized)
      * instead of the background, then averaged. The subject stays crisp while the
-     * rest smears along the motion. The reference is restored around the subject
-     * wherever it agrees with the average, so the restore follows the subject's
-     * outline instead of pasting a hard disc of unblurred background.
+     * rest smears along the motion. The reference subject is restored on top; at
+     * the rim of that restore only pixels agreeing with the average come back, so
+     * it follows the subject's outline instead of a hard disc of unblurred background.
      */
     suspend fun motionFocus(frames: List<YuvFrame>, ref: Int, cx: Float, cy: Float): YuvFrame {
         val reference = frames[ref]
@@ -134,7 +140,11 @@ object SmartCompositor {
                 if (d >= 1f) continue
                 val i = row * w + col
                 val diff = abs((reference.y[i].toInt() and 0xFF) - (y[i].toInt() and 0xFF)).toFloat()
-                val a = smooth(1f - d, 0f, 0.3f) * (1f - smooth(diff, 10f, 28f))
+                // the core is the subject itself, restored whole even where it turned or deformed;
+                // towards the rim only pixels that agree with the average come back, so no hard disc
+                val core = 1f - smooth(d, 0.45f, 0.75f)
+                val agree = 1f - smooth(diff, 10f, 28f)
+                val a = smooth(1f - d, 0f, 0.3f) * max(core, agree)
                 if (a <= 0.01f) continue
                 y[i] = mix(y[i], reference.y[i], a)
                 if ((row and 1) == 0 && (col and 1) == 0) {
@@ -198,16 +208,198 @@ object SmartCompositor {
 
     // ---- internals ---------------------------------------------------------------
 
-    /** Camera shake estimate: the most common block offset between two frames. */
-    private suspend fun dominantShift(ref: YuvFrame, f: YuvFrame): Pair<Int, Int> {
-        val offsets = BlockAligner.align(ref, f)
-        val votes = HashMap<Long, Int>()
-        for (i in offsets.indices step 2) {
-            val key = (offsets[i].toLong() shl 32) or (offsets[i + 1].toLong() and 0xFFFFFFFFL)
-            votes[key] = (votes[key] ?: 0) + 1
+    /**
+     * Camera motion from [ref] to [f]: a coarse global shift seeds the block
+     * search, then an affine model is fitted to the textured blocks that agree
+     * with it (twice, tightening the tolerance), so subjects moving through the
+     * frame and flat areas with meaningless offsets are left out.
+     */
+    suspend fun cameraMotion(ref: YuvFrame, f: YuvFrame): Affine {
+        val w = ref.width
+        val h = ref.height
+        val (sx, sy) = globalShift(ref, f)
+        val offsets = BlockAligner.align(ref, f, sx, sy)
+        val bs = BlockAligner.BLOCK
+        val blocksX = w / bs
+        val xs = ArrayList<Float>()
+        val ys = ArrayList<Float>()
+        val dxs = ArrayList<Float>()
+        val dys = ArrayList<Float>()
+        for (k in 0 until offsets.size / 2) {
+            val bx = (k % blocksX) * bs
+            val by = (k / blocksX) * bs
+            if (contrast(ref, bx, by, bs) < 16) continue
+            xs.add(bx + bs / 2f); ys.add(by + bs / 2f)
+            dxs.add(offsets[2 * k].toFloat()); dys.add(offsets[2 * k + 1].toFloat())
         }
-        val best = votes.maxByOrNull { it.value }?.key ?: return 0 to 0
-        return (best shr 32).toInt() to best.toInt()
+        val fallback = Affine(1f, 0f, sx.toFloat(), 0f, 1f, sy.toFloat())
+        if (xs.size < 12) return fallback
+        var model = Affine(1f, 0f, dxs.sorted()[dxs.size / 2], 0f, 1f, dys.sorted()[dys.size / 2])
+        for (tol in floatArrayOf(6f, 2.5f)) {
+            val keep = xs.indices.filter { k ->
+                val px = model.a * xs[k] + model.b * ys[k] + model.c - xs[k]
+                val py = model.d * xs[k] + model.e * ys[k] + model.f - ys[k]
+                abs(px - dxs[k]) <= tol && abs(py - dys[k]) <= tol
+            }
+            if (keep.size < max(12, xs.size / 8)) break
+            model = fitAffine(keep, xs, ys, dxs, dys, w / 2f, h / 2f) ?: break
+        }
+        // a hand-held phone does not zoom or shear noticeably in two seconds
+        val sane = abs(model.a - 1f) < 0.04f && abs(model.e - 1f) < 0.04f && abs(model.b) < 0.04f && abs(model.d) < 0.04f
+        return if (sane) model else fallback
+    }
+
+    /** Least squares x' = a·x + b·y + c (and likewise y') over [keep], about the frame centre. */
+    private fun fitAffine(
+        keep: List<Int>, xs: List<Float>, ys: List<Float>, dxs: List<Float>, dys: List<Float>, cx: Float, cy: Float,
+    ): Affine? {
+        var sxx = 0.0; var sxy = 0.0; var syy = 0.0; var sx = 0.0; var sy = 0.0
+        val tx = DoubleArray(3); val ty = DoubleArray(3)
+        for (k in keep) {
+            val x = (xs[k] - cx).toDouble()
+            val y = (ys[k] - cy).toDouble()
+            val u = x + dxs[k]
+            val v = y + dys[k]
+            sxx += x * x; sxy += x * y; syy += y * y; sx += x; sy += y
+            tx[0] += x * u; tx[1] += y * u; tx[2] += u
+            ty[0] += x * v; ty[1] += y * v; ty[2] += v
+        }
+        val n = keep.size.toDouble()
+        val m = arrayOf(doubleArrayOf(sxx, sxy, sx), doubleArrayOf(sxy, syy, sy), doubleArrayOf(sx, sy, n))
+        val px = solve3(m, tx) ?: return null
+        val py = solve3(m, ty) ?: return null
+        // undo the centring: x' + cx = a(x - cx) + b(y - cy) + c0 + cx
+        val c = px[2] - px[0] * cx - px[1] * cy + cx
+        val f = py[2] - py[0] * cx - py[1] * cy + cy
+        return Affine(px[0].toFloat(), px[1].toFloat(), c.toFloat(), py[0].toFloat(), py[1].toFloat(), f.toFloat())
+    }
+
+    private fun solve3(m: Array<DoubleArray>, r: DoubleArray): DoubleArray? {
+        fun det(a: Array<DoubleArray>) =
+            a[0][0] * (a[1][1] * a[2][2] - a[1][2] * a[2][1]) -
+                a[0][1] * (a[1][0] * a[2][2] - a[1][2] * a[2][0]) +
+                a[0][2] * (a[1][0] * a[2][1] - a[1][1] * a[2][0])
+        val d = det(m)
+        if (abs(d) < 1e-9) return null
+        return DoubleArray(3) { col ->
+            det(Array(3) { row -> DoubleArray(3) { c -> if (c == col) r[row] else m[row][c] } }) / d
+        }
+    }
+
+    /** Luma range over a block, on a 4 px grid: flat blocks carry no alignment information. */
+    private fun contrast(f: YuvFrame, x0: Int, y0: Int, size: Int): Int {
+        var lo = 255
+        var hi = 0
+        var y = y0
+        while (y < y0 + size) {
+            var x = x0
+            while (x < x0 + size) {
+                val v = f.y[y * f.width + x].toInt() and 0xFF
+                if (v < lo) lo = v
+                if (v > hi) hi = v
+                x += 4
+            }
+            y += 4
+        }
+        return hi - lo
+    }
+
+    /**
+     * Whole-frame shift, coarse to fine: an exhaustive ±[GLOBAL_RADIUS] search at
+     * eighth resolution (±96 px), refined ±2 at quarter resolution, so the block
+     * search starts close.
+     */
+    private fun globalShift(ref: YuvFrame, f: YuvFrame): Pair<Int, Int> {
+        val a8 = downscale(ref, 8)
+        val b8 = downscale(f, 8)
+        val (cx, cy) = bestShift(a8, b8, ref.width / 8, ref.height / 8, 0, 0, GLOBAL_RADIUS)
+        val a4 = downscale(ref, 4)
+        val b4 = downscale(f, 4)
+        val (fx, fy) = bestShift(a4, b4, ref.width / 4, ref.height / 4, cx * 2, cy * 2, 2)
+        return fx * 4 to fy * 4
+    }
+
+    private const val GLOBAL_RADIUS = 12
+
+    /** Lowest mean |Δ| shift within ±[r] of ([sx], [sy]), compared over the central area. */
+    private fun bestShift(a: IntArray, b: IntArray, w: Int, h: Int, sx: Int, sy: Int, r: Int): Pair<Int, Int> {
+        val m = max(abs(sx), abs(sy)) + r
+        var best = Long.MAX_VALUE
+        var bx = sx
+        var by = sy
+        for (dy in sy - r..sy + r) for (dx in sx - r..sx + r) {
+            var cost = 0L
+            for (y in m until h - m) {
+                val ra = y * w
+                val rb = (y + dy) * w + dx
+                for (x in m until w - m) cost += abs(a[ra + x] - b[rb + x])
+            }
+            if (cost < best) { best = cost; bx = dx; by = dy }
+        }
+        return bx to by
+    }
+
+    private fun downscale(f: YuvFrame, k: Int): IntArray {
+        val w = f.width / k
+        val h = f.height / k
+        val out = IntArray(w * h)
+        val shift = Integer.numberOfTrailingZeros(k * k)
+        for (y in 0 until h) for (x in 0 until w) {
+            var s = 0
+            for (yy in 0 until k) {
+                val row = (y * k + yy) * f.width + x * k
+                for (xx in 0 until k) s += f.y[row + xx].toInt() and 0xFF
+            }
+            out[y * w + x] = s shr shift
+        }
+        return out
+    }
+
+    /** [f] resampled (bilinear) onto the reference framing described by [m]. */
+    suspend fun warp(f: YuvFrame, m: Affine): YuvFrame {
+        val w = f.width
+        val h = f.height
+        val y = ByteArray(w * h)
+        forBands(h) { r0, r1 ->
+            for (row in r0 until r1) {
+                val bx = m.b * row + m.c
+                val by = m.e * row + m.f
+                for (col in 0 until w) y[row * w + col] = sample(f.y, w, h, m.a * col + bx, m.d * col + by)
+            }
+        }
+        val cw = w / 2
+        val ch = h / 2
+        val u = ByteArray(cw * ch)
+        val v = ByteArray(cw * ch)
+        forBands(ch) { r0, r1 ->
+            for (row in r0 until r1) for (col in 0 until cw) {
+                // chroma sample centre in luma space, mapped, then back to chroma space
+                val lx = col * 2 + 0.5f
+                val ly = row * 2 + 0.5f
+                val sx = (m.a * lx + m.b * ly + m.c - 0.5f) / 2f
+                val sy = (m.d * lx + m.e * ly + m.f - 0.5f) / 2f
+                u[row * cw + col] = sample(f.u, cw, ch, sx, sy)
+                v[row * cw + col] = sample(f.v, cw, ch, sx, sy)
+            }
+        }
+        return YuvFrame(w, h, y, u, v, f.tsMs)
+    }
+
+    private fun sample(p: ByteArray, w: Int, h: Int, x: Float, y: Float): Byte {
+        val cx = x.coerceIn(0f, w - 1.001f)
+        val cy = y.coerceIn(0f, h - 1.001f)
+        val x0 = cx.toInt()
+        val y0 = cy.toInt()
+        val tx = cx - x0
+        val ty = cy - y0
+        val i = y0 * w + x0
+        val p00 = p[i].toInt() and 0xFF
+        val p10 = p[i + 1].toInt() and 0xFF
+        val p01 = p[i + w].toInt() and 0xFF
+        val p11 = p[i + w + 1].toInt() and 0xFF
+        val top = p00 + (p10 - p00) * tx
+        val bot = p01 + (p11 - p01) * tx
+        return (top + (bot - top) * ty + 0.5f).toInt().toByte()
     }
 
     /** Translation that best matches a region of [ref] inside [f]; coarse-to-fine SAD search. */

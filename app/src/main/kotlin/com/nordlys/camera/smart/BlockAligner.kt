@@ -10,17 +10,20 @@ package com.nordlys.camera.smart
  * stage two refines at full resolution.
  *
  * Returns one [dx, dy] pair per block, row-major over the block grid.
- * Block rows are searched in parallel bands.
+ * Block rows are searched in parallel bands; [seedDx]/[seedDy] centre the
+ * search on a global estimate so large hand drift stays in range.
  */
 object BlockAligner {
 
     const val BLOCK = 16
-    private const val SEARCH_RADIUS_COARSE = 6
+    private const val SEARCH_RADIUS_COARSE = 8
     private const val SEARCH_RADIUS_FINE = 2
 
     suspend fun align(
         reference: YuvFrame,
         candidate: YuvFrame,
+        seedDx: Int = 0,
+        seedDy: Int = 0,
     ): IntArray {
         val w = reference.width
         val h = reference.height
@@ -34,13 +37,13 @@ object BlockAligner {
                 val baseY = by * BLOCK
 
                 // stage 1 — half-resolution SAD, subsampled block content
-                var bestDx = 0
-                var bestDy = 0
+                var bestDx = seedDx
+                var bestDy = seedDy
                 var bestCost = Int.MAX_VALUE
-                var dy = -SEARCH_RADIUS_COARSE
-                while (dy <= SEARCH_RADIUS_COARSE) {
-                    var dx = -SEARCH_RADIUS_COARSE
-                    while (dx <= SEARCH_RADIUS_COARSE) {
+                var dy = seedDy - SEARCH_RADIUS_COARSE
+                while (dy <= seedDy + SEARCH_RADIUS_COARSE) {
+                    var dx = seedDx - SEARCH_RADIUS_COARSE
+                    while (dx <= seedDx + SEARCH_RADIUS_COARSE) {
                         val cost = coarseSAD(reference, candidate, baseX, baseY, dx, dy)
                         if (cost < bestCost) {
                             bestCost = cost; bestDx = dx; bestDy = dy
