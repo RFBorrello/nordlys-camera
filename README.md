@@ -72,6 +72,11 @@ The workflow needs these repository secrets
 Every release must be signed with the same key, or Android refuses to install
 it as an update. Keep an offline backup of the keystore and its passwords.
 
+## License
+
+Nordlys is licensed under the [Apache License 2.0](LICENSE). The bundled Selawik
+fonts are under the SIL Open Font License (`LICENSE-Selawik.txt`).
+
 ## Cleanroom statement
 
 This repository contains no decompiled code, borrowed assets, or copied

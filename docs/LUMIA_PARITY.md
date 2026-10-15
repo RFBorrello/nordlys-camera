@@ -270,10 +270,9 @@ still found in every frame. Tap a face and pick the frame it should come from. I
 feathered ellipse, nudged by a local search. On the phone, a closed-eye frame took the open-eyed face
 from frame 0 in 157 ms with no visible seam at the hairline, beard or collar.
 
-Evidence: `docs/device-tests/oversampling-100pct-crops.jpg` (matched-field 100% crops, full-resolution vs
-oversampled) and `docs/device-tests/smart-hand-old-vs-new.jpg` (remove/action/motion, beta4 code vs this
-pass, on the same dumped frames). The face and bottle comparisons are kept out of the repo because they
-show people and screen contents.
+Evidence images (matched-field 100% crops, full-resolution vs oversampled; remove/action/motion
+beta4 vs this pass on the same dumped frames) are kept out of the repo because they show people,
+workplaces and screen contents.
 
 ## Gap analysis (Nordlys v0.1.0 → this pass)
 
