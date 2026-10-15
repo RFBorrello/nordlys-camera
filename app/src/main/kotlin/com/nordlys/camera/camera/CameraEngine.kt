@@ -87,19 +87,23 @@ class CameraEngine(private val context: Context) {
     val yuvSize: Size? get() = yuvReader?.let { Size(it.width, it.height) }
 
     // ---- lens discovery --------------------------------------------------------
-    fun backLensIds(): List<String> = manager.cameraIdList.filter { id ->
-        runCatching {
-            manager.getCameraCharacteristics(id).get(CameraCharacteristics.LENS_FACING) ==
-                CameraCharacteristics.LENS_FACING_BACK
-        }.getOrDefault(false)
-    }
+    fun backLensIds(): List<String> = runCatching {
+        manager.cameraIdList.filter { id ->
+            runCatching {
+                manager.getCameraCharacteristics(id).get(CameraCharacteristics.LENS_FACING) ==
+                    CameraCharacteristics.LENS_FACING_BACK
+            }.getOrDefault(false)
+        }
+    }.getOrDefault(emptyList())
 
-    val frontLensId: String? get() = manager.cameraIdList.firstOrNull { id ->
-        runCatching {
-            manager.getCameraCharacteristics(id).get(CameraCharacteristics.LENS_FACING) ==
-                CameraCharacteristics.LENS_FACING_FRONT
-        }.getOrDefault(false)
-    }
+    val frontLensId: String? get() = runCatching {
+        manager.cameraIdList.firstOrNull { id ->
+            runCatching {
+                manager.getCameraCharacteristics(id).get(CameraCharacteristics.LENS_FACING) ==
+                    CameraCharacteristics.LENS_FACING_FRONT
+            }.getOrDefault(false)
+        }
+    }.getOrNull()
 
     // ---- open / configure ------------------------------------------------------
     suspend fun open(id: String) = withContext(Dispatchers.Main) {

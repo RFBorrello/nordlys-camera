@@ -90,12 +90,14 @@ fun ViewfinderScreen(hasPermission: Boolean, audioGranted: Boolean = false, onOp
     var timerSec by remember { mutableStateOf(0) }
     var countdownSec by remember { mutableStateOf(0) }
     var settingsOpen by remember { mutableStateOf(false) }
-    val lensId = remember { engine.backLensIds().firstOrNull() }
-    val frontId = engine.frontLensId
+    val lensId = remember(hasPermission) { engine.backLensIds().firstOrNull() }
+    val frontId = remember(hasPermission) { engine.frontLensId }
 
     fun commitUpdate(s: ManualState) { state = s; engine.apply(s) }
 
-    fun bindPreview(surface: android.view.Surface) {
+    var lastSurface by remember { mutableStateOf<android.view.Surface?>(null) }
+
+    fun oldBind(surface: android.view.Surface) {
         scope.launch {
             if (!hasPermission) return@launch
             val id = if (frontSelected) frontId else lensId
@@ -105,6 +107,13 @@ fun ViewfinderScreen(hasPermission: Boolean, audioGranted: Boolean = false, onOp
                 engine.setPreviewSurface(surface)
             }.onSuccess { engineReady = true }.onFailure { engineReady = false }
             engine.apply(state.copy(flash = flash))
+        }
+    }
+
+    // grants landing after the surface existed need one rebind
+    LaunchedEffect(hasPermission, lastSurface) {
+        if (hasPermission && !engineReady && lastSurface != null) {
+            oldBind(lastSurface!!)
         }
     }
 
@@ -120,7 +129,7 @@ fun ViewfinderScreen(hasPermission: Boolean, audioGranted: Boolean = false, onOp
 
     Box(Modifier.fillMaxSize().background(Color.Black)) {
         // Preview
-        CameraPreviewSurface(Modifier.fillMaxSize(), onSurfaceReady = { surface -> bindPreview(surface) })
+        CameraPreviewSurface(Modifier.fillMaxSize(), onSurfaceReady = { surface -> lastSurface = surface; oldBind(surface) })
         GridOverlay(grid = state.grid, Modifier.fillMaxSize())
 
         Column(Modifier.fillMaxSize().systemBarsPadding()) {
