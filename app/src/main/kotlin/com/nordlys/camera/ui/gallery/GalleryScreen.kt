@@ -50,7 +50,7 @@ import androidx.compose.foundation.layout.size
 import coil.compose.AsyncImage
 import com.nordlys.camera.data.GalleryItem
 import com.nordlys.camera.data.MediaStoreRepository
-import com.nordlys.camera.living.LivingReader
+import com.nordlys.camera.living.LivingStore
 import com.nordlys.camera.ui.components.MetroPivot
 import com.nordlys.camera.ui.theme.MetroAccent
 import com.nordlys.camera.ui.theme.MetroForeground
@@ -86,7 +86,7 @@ fun GalleryScreen(onClose: () -> Unit) {
             items = list,
             startIndex = openIndex!!,
             repo = repo,
-            reader = remember { LivingReader(context) },
+            reader = remember { LivingStore(context) },
             onClose = { openIndex = null },
             onDeleted = { r: MediaStoreRepository ->
                 scope.launch {
@@ -156,7 +156,7 @@ private fun ViewerScreen(
     items: List<GalleryItem>,
     startIndex: Int,
     repo: MediaStoreRepository,
-    reader: LivingReader,
+    reader: LivingStore,
     onClose: () -> Unit,
     onDeleted: (MediaStoreRepository) -> Unit,
 ) {
@@ -164,6 +164,8 @@ private fun ViewerScreen(
     val scope = rememberCoroutineScope()
     var infoOpen by remember { mutableStateOf(false) }
     var confirmDelete by remember { mutableStateOf(false) }
+    var trimming by remember { mutableStateOf<GalleryItem?>(null) }
+    val playLiving = remember { com.nordlys.camera.data.CameraPrefsStore(context).load().playLiving }
     val pagerState = rememberPagerState(initialPage = startIndex, pageCount = { items.size })
     var zoomed by remember { mutableStateOf(false) }
     var chrome by remember { mutableStateOf(true) }
@@ -201,11 +203,11 @@ private fun ViewerScreen(
     Box(Modifier.fillMaxSize().background(Color.Black)) {
         HorizontalPager(state = pagerState, userScrollEnabled = !zoomed, modifier = Modifier.fillMaxSize()) { page ->
             val item = items.getOrNull(page) ?: return@HorizontalPager
-            val clip = remember(item.id) { if (item.isVideo) null else reader.clipFor(item.uri) }
+            val clip = remember(item.id) { if (item.isVideo || !playLiving) null else reader.clipFor(item.uri) }
             val toggle = { chrome = !chrome; touchedAt = System.currentTimeMillis() }
             Box(
                 Modifier.fillMaxSize().then(
-                    if (item.isVideo || clip != null) Modifier.pointerInput(Unit) { detectTapGestures(onTap = { toggle() }) } else Modifier,
+                    if (item.isVideo) Modifier.pointerInput(Unit) { detectTapGestures(onTap = { toggle() }) } else Modifier,
                 ),
                 contentAlignment = Alignment.Center,
             ) {
@@ -217,14 +219,15 @@ private fun ViewerScreen(
                     }
                     VideoPlayback(item, controller, active = pagerState.currentPage == page, chromeVisible = chrome, onInteract = { touchedAt = System.currentTimeMillis() })
                 }
-                else if (clip != null) {
-                    LivingPlayback(clip = clip, reader = reader, active = pagerState.currentPage == page)
+                else {
+                    ZoomableImage(
+                        item.uri, item.displayName,
+                        onZoomedChange = { z -> zoomed = z; if (z) chrome = false },
+                        onTap = toggle,
+                    )
+                    // a living image comes alive once the pager settles on it (§8)
+                    clip?.let { LivingClipOverlay(it, play = pagerState.settledPage == page && !zoomed) }
                 }
-                else ZoomableImage(
-                    item.uri, item.displayName,
-                    onZoomedChange = { z -> zoomed = z; if (z) chrome = false },
-                    onTap = toggle,
-                )
             }
         }
 
@@ -277,13 +280,32 @@ private fun ViewerScreen(
                     }
                     context.startActivity(Intent.createChooser(send, "Share with"))
                 }
-                ViewerAction("Edit later") { /* open with external editor chooser – Phase 3+ */ }
+                ViewerAction("Edit later") {
+                    val item = items.getOrNull(pagerState.currentPage) ?: return@ViewerAction
+                    if (item.isVideo) {
+                        currentVideo?.pause()
+                        trimming = item
+                    } else {
+                        val edit = Intent(Intent.ACTION_EDIT).apply {
+                            setDataAndType(item.uri, context.contentResolver.getType(item.uri) ?: "image/jpeg")
+                            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION)
+                        }
+                        runCatching { context.startActivity(Intent.createChooser(edit, "Edit with")) }
+                    }
+                }
                 ViewerAction("Remove") { confirmDelete = true }
                 ViewerAction("Details") { infoOpen = true }
             }
         }
         }
 
+        trimming?.let { item ->
+            TrimmerScreen(
+                item = item,
+                onClose = { trimming = null },
+                onSaved = { trimming = null; onDeleted(repo); onClose() },
+            )
+        }
         if (infoOpen) {
             val item = items.getOrNull(pagerState.currentPage) ?: return@ViewerScreen
             InfoSheet(

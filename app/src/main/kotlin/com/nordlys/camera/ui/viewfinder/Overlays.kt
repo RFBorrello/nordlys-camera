@@ -220,3 +220,29 @@ fun vfFrame(width: Float, height: Float, bottomInset: Float): VfFrame {
     val s = width / 480f
     return VfFrame(width, height, Offset(width / 2f, height - max(0f, bottomInset)), s)
 }
+
+/**
+ * Video time readout (§9): large light digits that sit over the viewfinder in
+ * video mode. [show] fades it in (after [delayed] ≈1 s when the mode was just
+ * entered) and out in 0.25 s; it never takes touches.
+ */
+@Composable
+fun VideoTimer(seconds: Int, show: Boolean, delayed: Boolean, s: Float, modifier: Modifier = Modifier) {
+    val alpha = remember { Animatable(0f) }
+    LaunchedEffect(show) {
+        if (show) {
+            if (delayed) delay(1000)
+            alpha.animateTo(1f, tween(250))
+        } else alpha.animateTo(0f, tween(250))
+    }
+    if (alpha.value <= 0f) return
+    val fontSize = with(androidx.compose.ui.platform.LocalDensity.current) { (60f * s).toSp() }
+    val text = if (seconds >= 3600) "%d:%02d:%02d".format(seconds / 3600, seconds / 60 % 60, seconds % 60)
+    else "%02d:%02d".format(seconds / 60, seconds % 60)
+    Text(
+        text = text,
+        style = TextStyle(fontFamily = Selawik, fontWeight = FontWeight.Light, fontSize = fontSize, lineHeight = fontSize),
+        color = Color.White,
+        modifier = modifier.graphicsLayer { this.alpha = alpha.value },
+    )
+}

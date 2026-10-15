@@ -47,7 +47,7 @@ import androidx.lifecycle.compose.LocalLifecycleOwner
 import com.nordlys.camera.camera.CameraEngine
 import com.nordlys.camera.data.CameraPrefs
 import com.nordlys.camera.data.CameraPrefsStore
-import com.nordlys.camera.living.LivingWriter
+import com.nordlys.camera.living.LivingStore
 import com.nordlys.camera.model.CameraRanges
 import com.nordlys.camera.model.CaptureMode
 import com.nordlys.camera.model.DualCapture
@@ -95,7 +95,7 @@ fun ViewfinderScreen(hasPermission: Boolean, audioGranted: Boolean = false, onOp
     val scope = rememberCoroutineScope()
     val engine = remember { CameraEngine(context) }
     val store = remember { CameraPrefsStore(context) }
-    val livingWriter = remember { LivingWriter(context) }
+    val livingStore = remember { LivingStore(context) }
     val tagger = remember { com.nordlys.camera.data.LocationTagger(context) { engine.location = it } }
 
     var prefs by remember { mutableStateOf(store.load()) }
@@ -113,6 +113,7 @@ fun ViewfinderScreen(hasPermission: Boolean, audioGranted: Boolean = false, onOp
     var countdown by remember { mutableIntStateOf(0) }
     var recording by remember { mutableStateOf(false) }
     var recordSec by remember { mutableIntStateOf(0) }
+    var modeEnteredAt by remember { mutableStateOf(0L) }
     var info by remember { mutableStateOf<String?>(null) }
     var infoKey by remember { mutableIntStateOf(0) }
     var menuOpen by remember { mutableStateOf(false) }
@@ -170,7 +171,12 @@ fun ViewfinderScreen(hasPermission: Boolean, audioGranted: Boolean = false, onOp
             engine.startPreview(s, prefs.aspect)
         }.onSuccess { ready = true }.onFailure { Log.w("NordlysViewfinder", "camera start failed", it) }
     }
-    LaunchedEffect(ready, prefs.living, mode) { if (ready) engine.setLivingEnabled(prefs.living && mode == CaptureMode.PHOTO) }
+    // the living buffer runs only where a single photo can come of it (§8)
+    val livingOn = prefs.living && mode == CaptureMode.PHOTO && !prefs.front && prefs.bracketCount <= 1
+    LaunchedEffect(ready, livingOn) { if (ready) engine.setLivingEnabled(livingOn) }
+    var videoQualities by remember { mutableStateOf(emptyList<com.nordlys.camera.model.VideoQuality>()) }
+    LaunchedEffect(ready, lensId) { if (ready && !prefs.front) videoQualities = engine.videoQualities() }
+    LaunchedEffect(Unit) { kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) { livingStore.sweep() } }
     LaunchedEffect(focusPhase) { if (focusPhase == com.nordlys.camera.camera.FocusPhase.IDLE && progress == null) focusPoint = null }
 
     DisposableEffect(lifecycleOwner) {
@@ -185,7 +191,11 @@ fun ViewfinderScreen(hasPermission: Boolean, audioGranted: Boolean = false, onOp
     }
     LaunchedEffect(recording) {
         recordSec = 0
-        while (recording) { delay(1000); recordSec++ }
+        val start = System.currentTimeMillis()
+        while (recording) {
+            delay(1000 - (System.currentTimeMillis() - start) % 1000)
+            if (recording) recordSec = ((System.currentTimeMillis() - start) / 1000).toInt()
+        }
     }
 
     BackHandler(enabled = dials != OpenDials.None && !menuOpen && !settingsOpen) { dials = OpenDials.None }
@@ -253,7 +263,7 @@ fun ViewfinderScreen(hasPermission: Boolean, audioGranted: Boolean = false, onOp
             CaptureMode.VIDEO -> scope.launch {
                 busy = true
                 if (!recording) {
-                    recording = runCatching { engine.beginVideoRecording(audioGranted) }.getOrDefault(false)
+                    recording = runCatching { engine.beginVideoRecording(audioGranted, prefs.videoQuality) }.getOrDefault(false)
                     if (!recording) say("video didn't start")
                 } else {
                     runCatching { engine.finishVideoRecording() }
@@ -285,10 +295,14 @@ fun ViewfinderScreen(hasPermission: Boolean, audioGranted: Boolean = false, onOp
                             frames.forEach { last = engine.saveStill(CameraEngine.StillsOut(it, null), DualCapture.OFF) ?: last }
                             afterSave(last)
                         }
-                        prefs.living -> engine.captureLivingStill(manual)?.let { payload ->
-                            val saved = engine.saveStill(CameraEngine.StillsOut(payload.stillJpeg, null), DualCapture.OFF)
-                            saved?.let { runCatching { livingWriter.write(it.uri, payload) } }
-                            afterSave(saved)
+                        livingOn -> {
+                            val clip = livingStore.newClipFile()
+                            engine.captureLivingStill(manual, clip)?.let { (still, hasClip) ->
+                                val saved = engine.saveStill(still, if (prefs.dual == DualCapture.DNG) DualCapture.OFF else prefs.dual)
+                                if (saved != null && hasClip) runCatching { livingStore.attach(saved.uri, clip, still.flashFired) }
+                                else clip.delete()
+                                afterSave(saved)
+                            }
                         }
                         else -> engine.captureStill(manual, withRaw = prefs.dual == DualCapture.DNG)?.let {
                             afterSave(engine.saveStill(it, prefs.dual))
@@ -419,6 +433,7 @@ fun ViewfinderScreen(hasPermission: Boolean, audioGranted: Boolean = false, onOp
                 dials = OpenDials.None
                 engine.clearFocus()
                 update(prefs.copy(mode = m, manual = manual.copy(torch = false)))
+                modeEnteredAt = System.currentTimeMillis()
                 say(when (m) { CaptureMode.VIDEO -> "video"; CaptureMode.PHOTO -> "photo"; CaptureMode.SMART -> "smart sequence" })
             },
             onFlick = { open ->
@@ -440,19 +455,27 @@ fun ViewfinderScreen(hasPermission: Boolean, audioGranted: Boolean = false, onOp
         // the confirmation is shown the way the photo was framed, not in the fixed viewfinder frame
         UprightOverlay(confirmOrientation) { CaptureConfirmation(confirm, confirmKey) }
 
-        // time code sits on the edge opposite the shutter, clear of the strip in every pose
-        if (recording) {
-            Text(
-                "● %02d:%02d".format(recordSec / 60, recordSec % 60),
-                style = TextStyle(fontFamily = Selawik, fontSize = with(density) { (26f * s).toSp() }),
-                color = Color.White,
-                modifier = Modifier
-                    .align(Alignment.TopCenter)
-                    .padding(top = px(46f * s))
-                    .graphicsLayer { rotationZ = glyphRotation }
-                    .background(Color.Black.copy(alpha = 0.4f))
-                    .padding(horizontal = 10.dp, vertical = 2.dp),
-            )
+        // video time readout (§9): just above the shutter upright, bottom-left in landscape
+        if (mode == CaptureMode.VIDEO) {
+            var captionUp by remember { mutableStateOf(false) }
+            LaunchedEffect(infoKey) {
+                if (info == null) return@LaunchedEffect
+                captionUp = true; delay(1350); captionUp = false
+            }
+            val showTimer = recording || (dials == OpenDials.None && !menuOpen && !captionUp)
+            val landscape = orientation == 90 || orientation == 270
+            UprightOverlay(orientation) {
+                Box(Modifier.fillMaxSize()) {
+                    VideoTimer(
+                        seconds = if (recording) recordSec else 0,
+                        show = showTimer,
+                        delayed = !recording && System.currentTimeMillis() - modeEnteredAt < 1500,
+                        s = s,
+                        modifier = if (landscape) Modifier.align(Alignment.BottomStart).padding(start = px(18f * s), bottom = px(38f * s))
+                        else Modifier.align(Alignment.BottomCenter).padding(bottom = px(screen.height - frame.anchor.y + 163f * s)),
+                    )
+                }
+            }
         }
 
         UprightOverlay(orientation) {
@@ -486,7 +509,9 @@ fun ViewfinderScreen(hasPermission: Boolean, audioGranted: Boolean = false, onOp
                             val (n, ev) = presets[(i + 1) % presets.size]
                             update(prefs.copy(bracketCount = n, bracketEv = ev))
                         })
-                        add(MenuItem("living images", if (prefs.living) "on" else "off") { update(prefs.copy(living = !prefs.living)) })
+                        if (!prefs.front) add(MenuItem("living images", if (prefs.living) "on" else "off") {
+                            update(prefs.copy(living = !prefs.living, playLiving = prefs.playLiving || !prefs.living))
+                        })
                     }
                     add(MenuItem("settings") { menuOpen = false; settingsOpen = true })
                 },
@@ -498,6 +523,7 @@ fun ViewfinderScreen(hasPermission: Boolean, audioGranted: Boolean = false, onOp
             SettingsSheet(
                 prefs = prefs,
                 hasRaw = ranges.hasRaw,
+                videoQualities = videoQualities,
                 onChange = { update(it) },
                 onReset = {
                     update(CameraPrefs(front = prefs.front))
