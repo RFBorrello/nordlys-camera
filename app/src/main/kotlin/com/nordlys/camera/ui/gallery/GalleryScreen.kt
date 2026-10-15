@@ -17,6 +17,8 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.systemBarsPadding
 import androidx.compose.foundation.layout.safeDrawingPadding
+import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.WindowInsetsSides
 import androidx.compose.foundation.layout.only
@@ -164,21 +166,73 @@ private fun ViewerScreen(
     var confirmDelete by remember { mutableStateOf(false) }
     val pagerState = rememberPagerState(initialPage = startIndex, pageCount = { items.size })
     var zoomed by remember { mutableStateOf(false) }
+    var chrome by remember { mutableStateOf(true) }
+    var touchedAt by remember { mutableStateOf(0L) }
+    val controllers = remember { androidx.compose.runtime.mutableStateMapOf<Long, VideoController>() }
+    val current = items.getOrNull(pagerState.currentPage)
+    val currentVideo = current?.let { controllers[it.id] }
     androidx.activity.compose.BackHandler(enabled = !infoOpen && !confirmDelete, onBack = onClose)
+
+    // tap shows/hides everything, system bars included, so the picture can stand alone
+    val view = androidx.compose.ui.platform.LocalView.current
+    LaunchedEffect(chrome) {
+        val window = (view.context as? android.app.Activity)?.window ?: return@LaunchedEffect
+        androidx.core.view.WindowCompat.getInsetsController(window, view).apply {
+            systemBarsBehavior = androidx.core.view.WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+            if (chrome) show(androidx.core.view.WindowInsetsCompat.Type.systemBars())
+            else hide(androidx.core.view.WindowInsetsCompat.Type.systemBars())
+        }
+    }
+    androidx.compose.runtime.DisposableEffect(Unit) {
+        onDispose {
+            (view.context as? android.app.Activity)?.window?.let {
+                androidx.core.view.WindowCompat.getInsetsController(it, view).show(androidx.core.view.WindowInsetsCompat.Type.systemBars())
+            }
+        }
+    }
+    // while a clip plays, the chrome steps aside after five quiet seconds
+    LaunchedEffect(chrome, currentVideo?.playing, touchedAt) {
+        if (chrome && currentVideo?.playing == true) {
+            kotlinx.coroutines.delay(5000)
+            chrome = false
+        }
+    }
 
     Box(Modifier.fillMaxSize().background(Color.Black)) {
         HorizontalPager(state = pagerState, userScrollEnabled = !zoomed, modifier = Modifier.fillMaxSize()) { page ->
             val item = items.getOrNull(page) ?: return@HorizontalPager
             val clip = remember(item.id) { if (item.isVideo) null else reader.clipFor(item.uri) }
-            Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                if (item.isVideo) VideoPlayback(item)
+            val toggle = { chrome = !chrome; touchedAt = System.currentTimeMillis() }
+            Box(
+                Modifier.fillMaxSize().then(
+                    if (item.isVideo || clip != null) Modifier.pointerInput(Unit) { detectTapGestures(onTap = { toggle() }) } else Modifier,
+                ),
+                contentAlignment = Alignment.Center,
+            ) {
+                if (item.isVideo) {
+                    val controller = remember(item.id) { VideoController(android.media.MediaPlayer()) }
+                    androidx.compose.runtime.DisposableEffect(item.id) {
+                        controllers[item.id] = controller
+                        onDispose { controllers.remove(item.id) }
+                    }
+                    VideoPlayback(item, controller, active = pagerState.currentPage == page)
+                }
                 else if (clip != null) {
                     LivingPlayback(clip = clip, reader = reader, active = pagerState.currentPage == page)
                 }
-                else ZoomableImage(item.uri, item.displayName, onZoomedChange = { zoomed = it })
+                else ZoomableImage(
+                    item.uri, item.displayName,
+                    onZoomedChange = { z -> zoomed = z; if (z) chrome = false },
+                    onTap = toggle,
+                )
             }
         }
 
+        androidx.compose.animation.AnimatedVisibility(
+            visible = chrome,
+            enter = androidx.compose.animation.fadeIn(androidx.compose.animation.core.tween(300)),
+            exit = androidx.compose.animation.fadeOut(androidx.compose.animation.core.tween(300)),
+        ) {
         Column(Modifier.fillMaxSize()) {
             Row(
                 Modifier
@@ -203,6 +257,9 @@ private fun ViewerScreen(
                 )
             }
             Spacer(Modifier.weight(1f))
+            currentVideo?.let { c ->
+                if (c.started) VideoControls(c, onInteract = { touchedAt = System.currentTimeMillis() }, modifier = Modifier.padding(bottom = 8.dp))
+            }
             Row(
                 Modifier
                     .fillMaxWidth()
@@ -224,6 +281,7 @@ private fun ViewerScreen(
                 ViewerAction("Remove") { confirmDelete = true }
                 ViewerAction("Details") { infoOpen = true }
             }
+        }
         }
 
         if (infoOpen) {

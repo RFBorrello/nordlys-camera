@@ -117,6 +117,18 @@ Bracketing: 3 or 5 frames at ±0.3/0.7/1.0/2.0/3.0 EV via the menu.
 - Scene modes: night (longer exposure ceiling), sport (short exposure bias).
 - Manual ISO with auto shutter and vice-versa both work (semi-auto priority).
 
+## 7. Library viewer
+
+- A single tap (once it can no longer be a double-tap) shows or hides all
+  chrome — header, actions, video transport — with a 0.3 s fade; pinching or
+  panning a photo hides it.
+- Clips do not autoplay: a 100 px ringed play button sits centred on the frame
+  until playback starts, and the volume eases up from 20 % over 1.5 s.
+- Transport (part of the chrome): 74 px ringed play/pause disc, then a 4 px
+  timeline (white @ 40 % track, accent fill, 18 px white knob), then
+  "elapsed / total". Scrubbing pauses playback and resumes it on release.
+- While a clip plays, the chrome hides itself after 5 s without a touch.
+
 ---
 
 ## Gap analysis (Nordlys v0.1.0 → this pass)

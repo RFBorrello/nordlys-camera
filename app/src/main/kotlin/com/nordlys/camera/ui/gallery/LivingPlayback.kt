@@ -25,10 +25,10 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.withContext
 
-/** Cycles a motion sidecar's frames; tap toggles pause. */
+/** Cycles a motion sidecar's frames while its page is showing. */
 @Composable
 fun LivingPlayback(clip: LivingClip, reader: LivingReader, active: Boolean) {
-    var playing by remember(clip.id) { mutableStateOf(true) }
+    val playing = true
     var frame by remember(clip.id) { mutableStateOf(0) }
     var bmp by remember(clip.id) { mutableStateOf<android.graphics.Bitmap?>(null) }
 
@@ -41,12 +41,8 @@ fun LivingPlayback(clip: LivingClip, reader: LivingReader, active: Boolean) {
         }
     }
 
-    Box(
-        Modifier.fillMaxSize().clickable(
-            interactionSource = remember { MutableInteractionSource() },
-            indication = null,
-        ) { playing = !playing },
-    ) {
+    // taps belong to the viewer (they show and hide its chrome); motion just loops
+    Box(Modifier.fillMaxSize()) {
         val current = bmp
         if (current != null) {
             Image(

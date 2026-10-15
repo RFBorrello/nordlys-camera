@@ -34,10 +34,11 @@ private const val DOUBLE_TAP_ZOOM = 2.5f
  * Photo that fits the screen and can be pinched up to 5×, panned while
  * zoomed, and double-tapped in and out. While at 1× single-finger drags are
  * left alone so the pager can swipe between photos; [onZoomedChange] lets the
- * pager stop swiping while zoomed.
+ * pager stop swiping while zoomed. A single tap (once it can't become a
+ * double-tap) goes to [onTap].
  */
 @Composable
-fun ZoomableImage(uri: Uri, description: String, onZoomedChange: (Boolean) -> Unit, modifier: Modifier = Modifier) {
+fun ZoomableImage(uri: Uri, description: String, onZoomedChange: (Boolean) -> Unit, onTap: () -> Unit, modifier: Modifier = Modifier) {
     val scope = rememberCoroutineScope()
     val scale = remember(uri) { Animatable(1f) }
     var offset by remember(uri) { mutableStateOf(Offset.Zero) }
@@ -54,7 +55,7 @@ fun ZoomableImage(uri: Uri, description: String, onZoomedChange: (Boolean) -> Un
             .fillMaxSize()
             .onSizeChanged { box = it }
             .pointerInput(uri) {
-                detectTapGestures(onDoubleTap = { tap ->
+                detectTapGestures(onTap = { onTap() }, onDoubleTap = { tap ->
                     scope.launch {
                         if (scale.value > 1.05f) {
                             offset = Offset.Zero

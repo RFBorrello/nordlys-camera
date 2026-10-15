@@ -12,8 +12,8 @@ android {
         applicationId = "com.nordlys.camera"
         minSdk = 26
         targetSdk = 35
-        versionCode = 3
-        versionName = "0.2.0-beta2"
+        versionCode = 4
+        versionName = "0.2.0-beta3"
     }
 
     buildTypes {
